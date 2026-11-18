@@ -15,12 +15,14 @@ require_once __DIR__ . '/../src/Controllers/PacienteController.php';
 require_once __DIR__ . '/../src/Controllers/AuthController.php';
 require_once __DIR__ . '/../src/Controllers/CalendarioController.php';
 require_once __DIR__ . '/../src/Controllers/CitaController.php';
+require_once __DIR__ . '/../src/Controllers/HistoriaController.php';
 
 use App\Controllers\CatalogoController;
 use App\Controllers\PacienteController;
 use App\Controllers\AuthController;
 use App\Controllers\CalendarioController;
 use App\Controllers\CitaController;
+use App\Controllers\HistoriaController;
 
 $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $method = $_SERVER['REQUEST_METHOD'];
@@ -43,7 +45,11 @@ if ($uri === '/' || $uri === '/api') {
             "GET /api/calendarios/disponibilidad",
             "GET /api/citas",
             "POST /api/citas",
-            "PUT /api/citas"
+            "PUT /api/citas",
+            "GET /api/historias",
+            "GET /api/historias/antecedentes",
+            "POST /api/historias",
+            "PUT /api/examenes"
         ]
     ], JSON_UNESCAPED_UNICODE);
 
@@ -79,6 +85,18 @@ if ($uri === '/' || $uri === '/api') {
 
 } elseif ($uri === '/api/citas' && $method === 'PUT') {
     CitaController::actualizar($input);
+
+} elseif ($uri === '/api/historias' && $method === 'GET') {
+    HistoriaController::listar();
+
+} elseif ($uri === '/api/historias/antecedentes' && $method === 'GET') {
+    HistoriaController::obtenerUltimosAntecedentes();
+
+} elseif ($uri === '/api/historias' && $method === 'POST') {
+    HistoriaController::crear($input);
+
+} elseif ($uri === '/api/examenes' && $method === 'PUT') {
+    HistoriaController::actualizarExamen($input);
 
 } else {
     http_response_code(404);
