@@ -13,10 +13,14 @@ require_once __DIR__ . '/../src/Config/Database.php';
 require_once __DIR__ . '/../src/Controllers/CatalogoController.php';
 require_once __DIR__ . '/../src/Controllers/PacienteController.php';
 require_once __DIR__ . '/../src/Controllers/AuthController.php';
+require_once __DIR__ . '/../src/Controllers/CalendarioController.php';
+require_once __DIR__ . '/../src/Controllers/CitaController.php';
 
 use App\Controllers\CatalogoController;
 use App\Controllers\PacienteController;
 use App\Controllers\AuthController;
+use App\Controllers\CalendarioController;
+use App\Controllers\CitaController;
 
 $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $method = $_SERVER['REQUEST_METHOD'];
@@ -33,7 +37,13 @@ if ($uri === '/' || $uri === '/api') {
             "POST /api/auth/verificar-otp",
             "GET /api/catalogos",
             "GET /api/pacientes",
-            "POST /api/pacientes"
+            "POST /api/pacientes",
+            "GET /api/calendarios",
+            "POST /api/calendarios",
+            "GET /api/calendarios/disponibilidad",
+            "GET /api/citas",
+            "POST /api/citas",
+            "PUT /api/citas"
         ]
     ], JSON_UNESCAPED_UNICODE);
 
@@ -51,6 +61,24 @@ if ($uri === '/' || $uri === '/api') {
 
 } elseif ($uri === '/api/pacientes' && $method === 'POST') {
     PacienteController::crear($input);
+
+} elseif ($uri === '/api/calendarios' && $method === 'GET') {
+    CalendarioController::listar();
+
+} elseif ($uri === '/api/calendarios' && $method === 'POST') {
+    CalendarioController::guardar($input);
+
+} elseif ($uri === '/api/calendarios/disponibilidad' && $method === 'GET') {
+    CalendarioController::disponibilidad();
+
+} elseif ($uri === '/api/citas' && $method === 'GET') {
+    CitaController::listar();
+
+} elseif ($uri === '/api/citas' && $method === 'POST') {
+    CitaController::crear($input);
+
+} elseif ($uri === '/api/citas' && $method === 'PUT') {
+    CitaController::actualizar($input);
 
 } else {
     http_response_code(404);
