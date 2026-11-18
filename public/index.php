@@ -12,14 +12,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 require_once __DIR__ . '/../src/Config/Database.php';
 require_once __DIR__ . '/../src/Controllers/CatalogoController.php';
 require_once __DIR__ . '/../src/Controllers/PacienteController.php';
+require_once __DIR__ . '/../src/Controllers/AuthController.php';
 
 use App\Controllers\CatalogoController;
 use App\Controllers\PacienteController;
+use App\Controllers\AuthController;
 
 $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $method = $_SERVER['REQUEST_METHOD'];
 
-// Leer cuerpo JSON en peticiones POST/PUT
 $input = json_decode(file_get_contents('php://input'), true) ?? $_POST;
 
 // Enrutador principal
@@ -28,11 +29,19 @@ if ($uri === '/' || $uri === '/api') {
         "status" => "success",
         "mensaje" => "¡API de GinevApp funcionando correctamente en Easypanel!",
         "endpoints_disponibles" => [
+            "POST /api/auth/enviar-otp",
+            "POST /api/auth/verificar-otp",
             "GET /api/catalogos",
             "GET /api/pacientes",
             "POST /api/pacientes"
         ]
     ], JSON_UNESCAPED_UNICODE);
+
+} elseif ($uri === '/api/auth/enviar-otp' && $method === 'POST') {
+    AuthController::enviarOtp($input);
+
+} elseif ($uri === '/api/auth/verificar-otp' && $method === 'POST') {
+    AuthController::verificarOtp($input);
 
 } elseif ($uri === '/api/catalogos' && $method === 'GET') {
     CatalogoController::obtenerTodos();
