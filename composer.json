@@ -1,0 +1,13 @@
+{
+    "name": "lanaranjamarketing/ginevapp",
+    "description": "Backend API para GinevApp",
+    "type": "project",
+    "require": {
+        "php": "^8.2"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "src/"
+        }
+    }
+}
