@@ -257,4 +257,76 @@ class FinanzaServicioController {
             echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
         }
     }
+    /**
+     * GET /api/tasa-bcv/sincronizar
+     * Extrae la tasa oficial del BCV (con respaldo API) y guarda el registro horario
+     */
+    public static function sincronizarTasaBcv() {
+        try {
+            $tasaUsd = 0.0;
+
+            // 1. Intentar extracción directa desde bcv.org.ve
+            $ch = curl_init('https://www.bcv.org.ve/');
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 20);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            ]);
+            $html = curl_exec($ch);
+            curl_close($ch);
+
+            if ($html && (
+                preg_match('/id="dolar"[^>]*>.*?<strong>\s*([0-9.,]+)\s*<\/strong>/s', $html, $matches) ||
+                preg_match('/field-content[^>]*>.*?<strong>\s*([0-9.,]+)\s*<\/strong>/s', $html, $matches)
+            )) {
+                $raw = str_replace('.', '', trim($matches[1]));
+                $raw = str_replace(',', '.', $raw);
+                $tasaUsd = (float)$raw;
+            }
+
+            // 2. Respaldo automático si bcv.org.ve bloquea la petición
+            if ($tasaUsd <= 0) {
+                $chApi = curl_init('https://ve.dolarapi.com/v1/dolares/oficial');
+                curl_setopt($chApi, CURLOPT_RETURNTRANSFER, true);
+                curl_setopt($chApi, CURLOPT_TIMEOUT, 15);
+                $jsonApi = curl_exec($chApi);
+                curl_close($chApi);
+
+                if ($jsonApi) {
+                    $dataApi = json_decode($jsonApi, true);
+                    if (!empty($dataApi['promedio'])) {
+                        $tasaUsd = (float)$dataApi['promedio'];
+                    }
+                }
+            }
+
+            if ($tasaUsd <= 0) {
+                http_response_code(502);
+                echo json_encode(["status" => "error", "mensaje" => "No se pudo obtener la tasa desde BCV ni desde el respaldo."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo = Database::conectar();
+            $ahora = date('Y-m-d H:i:s');
+
+            $stmt = $pdo->prepare("INSERT INTO gm_tasa_bcv (fecha, tasa_usd) VALUES (:fecha, :tasa)");
+            $stmt->execute([
+                ':fecha' => $ahora,
+                ':tasa'  => $tasaUsd
+            ]);
+
+            echo json_encode([
+                "status"   => "success",
+                "mensaje"  => "Tasa BCV sincronizada correctamente.",
+                "fecha"    => $ahora,
+                "tasa_usd" => $tasaUsd
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
 }

@@ -132,6 +132,8 @@ if ($uri === '/' || $uri === '/api') {
 } elseif ($uri === '/api/finanzas' && $method === 'POST') {
     FinanzaServicioController::registrarMovimiento($input);
 
+} elseif ($uri === '/api/tasa-bcv/sincronizar' && $method === 'GET') {
+    FinanzaServicioController::sincronizarTasaBcv();
 } else {
     http_response_code(404);
     echo json_encode([
