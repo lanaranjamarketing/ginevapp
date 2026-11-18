@@ -199,4 +199,108 @@ class CitaController {
             echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
         }
     }
+/**
+     * POST /api/citas/check-in-qr
+     * Se ejecuta cuando el paciente escanea el QR del médico en la clínica
+     * Recibe: { "medico_id": 1, "paciente_id": 5 }
+     */
+    public static function checkInQr($input) {
+        try {
+            $medicoId   = (int)($input['medico_id'] ?? 0);
+            $pacienteId = (int)($input['paciente_id'] ?? 0);
+
+            if ($medicoId <= 0 || $pacienteId <= 0) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "Los campos medico_id y paciente_id son obligatorios."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo = Database::conectar();
+            $hoy = date('Y-m-d');
+
+            // Buscar cita del paciente para HOY con ese médico
+            $stmt = $pdo->prepare("SELECT * FROM gm_citas WHERE medico_id = :med AND paciente_id = :pac AND fecha_cita = :hoy AND estado_cita IN ('reservada', 'confirmada', 'en_espera') ORDER BY hora_cita ASC LIMIT 1");
+            $stmt->execute([':med' => $medicoId, ':pac' => $pacienteId, ':hoy' => $hoy]);
+            $cita = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$cita) {
+                http_response_code(404);
+                echo json_encode(["status" => "error", "mensaje" => "No tiene ninguna cita programada para el día de hoy con este médico."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            // Si ya estaba en espera, devolver su turno actual
+            if ($cita['estado_cita'] === 'en_espera' && (int)$cita['numero_llegada'] > 0) {
+                $turnoAsignado = (int)$cita['numero_llegada'];
+            } else {
+                // Calcular siguiente número correlativo de llegada para ese médico hoy
+                $maxStmt = $pdo->prepare("SELECT COALESCE(MAX(numero_llegada), 0) FROM gm_citas WHERE medico_id = :med AND fecha_cita = :hoy");
+                $maxStmt->execute([':med' => $medicoId, ':hoy' => $hoy]);
+                $turnoAsignado = (int)$maxStmt->fetchColumn() + 1;
+
+                $upd = $pdo->prepare("UPDATE gm_citas SET estado_cita = 'en_espera', numero_llegada = :turno WHERE id = :id");
+                $upd->execute([':turno' => $turnoAsignado, ':id' => $cita['id']]);
+            }
+
+            // Calcular pacientes por delante y tiempo estimado de espera
+            $delanteStmt = $pdo->prepare("SELECT COUNT(*) FROM gm_citas WHERE medico_id = :med AND fecha_cita = :hoy AND estado_cita = 'en_espera' AND numero_llegada < :turno");
+            $delanteStmt->execute([':med' => $medicoId, ':hoy' => $hoy, ':turno' => $turnoAsignado]);
+            $pacientesDelante = (int)$delanteStmt->fetchColumn();
+
+            $promStmt = $pdo->prepare("SELECT AVG(duracion_minutos) FROM gm_tiempo_atencion WHERE medico_id = :med AND duracion_minutos > 0");
+            $promStmt->execute([':med' => $medicoId]);
+            $promedioMin = (float)$promStmt->fetchColumn();
+            if ($promedioMin <= 0) {
+                $promedioMin = 20; // Promedio base si aún no hay histórico
+            }
+
+            $tiempoEstimadoMin = round($pacientesDelante * $promedioMin);
+
+            echo json_encode([
+                "status"               => "success",
+                "mensaje"              => "¡Llegada registrada! Ha ingresado a la sala de espera.",
+                "cita_id"              => (int)$cita['id'],
+                "numero_turno"         => $turnoAsignado,
+                "pacientes_delante"    => $pacientesDelante,
+                "tiempo_estimado_min"  => $tiempoEstimadoMin
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * POST /api/citas/iniciar-atencion
+     * El médico pasa al paciente a consulta y registra la hora de inicio
+     */
+    public static function iniciarAtencion($input) {
+        try {
+            $citaId   = (int)($input['cita_id'] ?? 0);
+            $medicoId = (int)($input['medico_id'] ?? 0);
+
+            if ($citaId <= 0 || $medicoId <= 0) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "Los campos cita_id y medico_id son obligatorios."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo = Database::conectar();
+            $pdo->prepare("UPDATE gm_citas SET estado_cita = 'en_consulta' WHERE id = :cid")->execute([':cid' => $citaId]);
+
+            $pdo->prepare("INSERT INTO gm_tiempo_atencion (medico_id, cita_id, hora_inicio) VALUES (:med, :cid, NOW())")
+                ->execute([':med' => $medicoId, ':cid' => $citaId]);
+
+            echo json_encode([
+                "status"  => "success",
+                "mensaje" => "Consulta iniciada y cronómetro de atención activado."
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
 }

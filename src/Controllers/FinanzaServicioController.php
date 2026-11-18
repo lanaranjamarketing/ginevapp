@@ -1,0 +1,260 @@
+<?php
+namespace App\Controllers;
+
+use App\Config\Database;
+use PDO;
+use Exception;
+
+class FinanzaServicioController {
+
+    /**
+     * GET /api/servicios?medico_id=X
+     */
+    public static function listarServicios() {
+        try {
+            $pdo = Database::conectar();
+            $medicoId = isset($_GET['medico_id']) ? (int)$_GET['medico_id'] : 0;
+
+            if ($medicoId > 0) {
+                $stmt = $pdo->prepare("SELECT * FROM gm_servicios WHERE medico_id = :med ORDER BY tipo ASC, nombre_servicio ASC");
+                $stmt->execute([':med' => $medicoId]);
+            } else {
+                $stmt = $pdo->query("SELECT * FROM gm_servicios ORDER BY id DESC");
+            }
+
+            $servicios = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($servicios as &$s) {
+                $s['items_combo'] = !empty($s['items_combo']) ? json_decode($s['items_combo'], true) : [];
+            }
+
+            echo json_encode([
+                "status" => "success",
+                "total"  => count($servicios),
+                "data"   => $servicios
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * POST /api/servicios
+     * Crea un servicio individual o un combo de servicios
+     */
+    public static function crearServicio($input) {
+        try {
+            $medicoId = (int)($input['medico_id'] ?? 0);
+            $nombre   = trim($input['nombre_servicio'] ?? '');
+            $precio   = (float)($input['precio'] ?? 0);
+
+            if ($medicoId <= 0 || empty($nombre)) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "Los campos medico_id y nombre_servicio son obligatorios."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo = Database::conectar();
+            $tipo = trim($input['tipo'] ?? 'servicio');
+            $itemsCombo = !empty($input['items_combo']) ? (is_string($input['items_combo']) ? $input['items_combo'] : json_encode($input['items_combo'], JSON_UNESCAPED_UNICODE)) : null;
+
+            $sql = "INSERT INTO gm_servicios (medico_id, nombre_servicio, descripcion, precio, tipo, items_combo) 
+                    VALUES (:med, :nombre, :desc, :precio, :tipo, :items)";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([
+                ':med'    => $medicoId,
+                ':nombre' => $nombre,
+                ':desc'   => $input['descripcion'] ?? null,
+                ':precio' => $precio,
+                ':tipo'   => $tipo,
+                ':items'  => $itemsCombo
+            ]);
+
+            http_response_code(201);
+            echo json_encode([
+                "status"  => "success",
+                "mensaje" => "Servicio registrado correctamente.",
+                "id"      => $pdo->lastInsertId()
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * GET /api/tasa-bcv
+     * Obtiene la tasa BCV vigente más reciente
+     */
+    public static function obtenerTasaBcv() {
+        try {
+            $pdo = Database::conectar();
+            $stmt = $pdo->query("SELECT id, fecha, tasa_usd FROM gm_tasa_bcv ORDER BY fecha DESC LIMIT 1");
+            $tasa = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            echo json_encode([
+                "status" => "success",
+                "data"   => $tasa ?: ["tasa_usd" => "1.0000", "fecha" => date('Y-m-d H:i:s')]
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * POST /api/tasa-bcv
+     * Registra o actualiza manualmente la tasa BCV del día
+     */
+    public static function guardarTasaBcv($input) {
+        try {
+            $tasaUsd = (float)($input['tasa_usd'] ?? 0);
+            if ($tasaUsd <= 0) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "Debe indicar un valor válido para tasa_usd."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo = Database::conectar();
+            $fecha = !empty($input['fecha']) ? trim($input['fecha']) : date('Y-m-d H:i:s');
+
+            $sql = "INSERT INTO gm_tasa_bcv (fecha, tasa_usd) VALUES (:fecha, :tasa)
+                    ON DUPLICATE KEY UPDATE tasa_usd = :tasa";
+            $pdo->prepare($sql)->execute([
+                ':fecha' => $fecha,
+                ':tasa'  => $tasaUsd
+            ]);
+
+            echo json_encode([
+                "status"   => "success",
+                "mensaje"  => "Tasa BCV actualizada correctamente.",
+                "tasa_usd" => $tasaUsd
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * GET /api/finanzas?medico_id=X&paciente_id=Y
+     * Lista los movimientos financieros (Debe / Haber / Saldo en USD y Bs) y totales
+     */
+    public static function listarFinanzas() {
+        try {
+            $pdo = Database::conectar();
+            $condiciones = ["1=1"];
+            $params = [];
+
+            if (!empty($_GET['medico_id'])) {
+                $condiciones[] = "f.medico_id = :med";
+                $params[':med'] = (int)$_GET['medico_id'];
+            }
+            if (!empty($_GET['paciente_id'])) {
+                $condiciones[] = "f.paciente_id = :pac";
+                $params[':pac'] = (int)$_GET['paciente_id'];
+            }
+
+            $whereSql = implode(" AND ", $condiciones);
+
+            $sql = "SELECT 
+                        f.*,
+                        CONCAT(p.nombre, ' ', p.apellido) AS paciente_nombre,
+                        p.cedula AS paciente_cedula
+                    FROM gm_finanzas f
+                    LEFT JOIN gm_usuarios_extendidos p ON f.paciente_id = p.user_id
+                    WHERE $whereSql
+                    ORDER BY f.fecha DESC, f.id DESC";
+
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+            $movimientos = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $totalDebeUsd  = 0;
+            $totalHaberUsd = 0;
+            foreach ($movimientos as $m) {
+                $totalDebeUsd  += (float)$m['debe'];
+                $totalHaberUsd += (float)$m['haber'];
+            }
+
+            echo json_encode([
+                "status" => "success",
+                "resumen" => [
+                    "total_cargos_usd" => round($totalDebeUsd, 2),
+                    "total_abonos_usd" => round($totalHaberUsd, 2),
+                    "saldo_pendiente_usd" => round($totalDebeUsd - $totalHaberUsd, 2)
+                ],
+                "total" => count($movimientos),
+                "data"  => $movimientos
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * POST /api/finanzas
+     * Registra un pago/abono (haber) o un cargo adicional (debe) con cálculo automático en Bs
+     */
+    public static function registrarMovimiento($input) {
+        try {
+            $medicoId   = (int)($input['medico_id'] ?? 0);
+            $pacienteId = (int)($input['paciente_id'] ?? 0);
+            $concepto   = trim($input['concepto'] ?? '');
+            $debe       = (float)($input['debe'] ?? 0);
+            $haber      = (float)($input['haber'] ?? 0);
+
+            if ($medicoId <= 0 || $pacienteId <= 0 || empty($concepto) || ($debe <= 0 && $haber <= 0)) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "Datos incompletos para el registro financiero."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo = Database::conectar();
+
+            $tasaVal = $pdo->query("SELECT tasa_usd FROM gm_tasa_bcv ORDER BY fecha DESC LIMIT 1")->fetchColumn();
+            $tasaBcv = !empty($input['tasa_bcv']) ? (float)$input['tasa_bcv'] : (($tasaVal && (float)$tasaVal > 0) ? (float)$tasaVal : 1.0000);
+
+            $saldo   = round($debe - $haber, 2);
+            $debeBs  = round($debe * $tasaBcv, 2);
+            $haberBs = round($haber * $tasaBcv, 2);
+            $saldoBs = round($saldo * $tasaBcv, 2);
+
+            $sql = "INSERT INTO gm_finanzas 
+                    (medico_id, paciente_id, historia_id, fecha, concepto, debe, haber, saldo, debe_bs, haber_bs, saldo_bs, tasa_bcv) 
+                    VALUES 
+                    (:med, :pac, :hid, CURDATE(), :concepto, :debe, :haber, :saldo, :debe_bs, :haber_bs, :saldo_bs, :tasa)";
+
+            $pdo->prepare($sql)->execute([
+                ':med'      => $medicoId,
+                ':pac'      => $pacienteId,
+                ':hid'      => !empty($input['historia_id']) ? (int)$input['historia_id'] : null,
+                ':concepto' => $concepto,
+                ':debe'     => $debe,
+                ':haber'    => $haber,
+                ':saldo'    => $saldo,
+                ':debe_bs'  => $debeBs,
+                ':haber_bs' => $haberBs,
+                ':saldo_bs' => $saldoBs,
+                ':tasa'     => $tasaBcv
+            ]);
+
+            http_response_code(201);
+            echo json_encode([
+                "status"  => "success",
+                "mensaje" => "Movimiento financiero registrado correctamente.",
+                "id"      => $pdo->lastInsertId()
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+}

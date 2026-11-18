@@ -16,6 +16,7 @@ require_once __DIR__ . '/../src/Controllers/AuthController.php';
 require_once __DIR__ . '/../src/Controllers/CalendarioController.php';
 require_once __DIR__ . '/../src/Controllers/CitaController.php';
 require_once __DIR__ . '/../src/Controllers/HistoriaController.php';
+require_once __DIR__ . '/../src/Controllers/FinanzaServicioController.php';
 
 use App\Controllers\CatalogoController;
 use App\Controllers\PacienteController;
@@ -23,6 +24,7 @@ use App\Controllers\AuthController;
 use App\Controllers\CalendarioController;
 use App\Controllers\CitaController;
 use App\Controllers\HistoriaController;
+use App\Controllers\FinanzaServicioController;
 
 $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $method = $_SERVER['REQUEST_METHOD'];
@@ -46,10 +48,18 @@ if ($uri === '/' || $uri === '/api') {
             "GET /api/citas",
             "POST /api/citas",
             "PUT /api/citas",
+            "POST /api/citas/check-in-qr",
+            "POST /api/citas/iniciar-atencion",
             "GET /api/historias",
             "GET /api/historias/antecedentes",
             "POST /api/historias",
-            "PUT /api/examenes"
+            "PUT /api/examenes",
+            "GET /api/servicios",
+            "POST /api/servicios",
+            "GET /api/tasa-bcv",
+            "POST /api/tasa-bcv",
+            "GET /api/finanzas",
+            "POST /api/finanzas"
         ]
     ], JSON_UNESCAPED_UNICODE);
 
@@ -86,6 +96,12 @@ if ($uri === '/' || $uri === '/api') {
 } elseif ($uri === '/api/citas' && $method === 'PUT') {
     CitaController::actualizar($input);
 
+} elseif ($uri === '/api/citas/check-in-qr' && $method === 'POST') {
+    CitaController::checkInQr($input);
+
+} elseif ($uri === '/api/citas/iniciar-atencion' && $method === 'POST') {
+    CitaController::iniciarAtencion($input);
+
 } elseif ($uri === '/api/historias' && $method === 'GET') {
     HistoriaController::listar();
 
@@ -97,6 +113,24 @@ if ($uri === '/' || $uri === '/api') {
 
 } elseif ($uri === '/api/examenes' && $method === 'PUT') {
     HistoriaController::actualizarExamen($input);
+
+} elseif ($uri === '/api/servicios' && $method === 'GET') {
+    FinanzaServicioController::listarServicios();
+
+} elseif ($uri === '/api/servicios' && $method === 'POST') {
+    FinanzaServicioController::crearServicio($input);
+
+} elseif ($uri === '/api/tasa-bcv' && $method === 'GET') {
+    FinanzaServicioController::obtenerTasaBcv();
+
+} elseif ($uri === '/api/tasa-bcv' && $method === 'POST') {
+    FinanzaServicioController::guardarTasaBcv($input);
+
+} elseif ($uri === '/api/finanzas' && $method === 'GET') {
+    FinanzaServicioController::listarFinanzas();
+
+} elseif ($uri === '/api/finanzas' && $method === 'POST') {
+    FinanzaServicioController::registrarMovimiento($input);
 
 } else {
     http_response_code(404);
