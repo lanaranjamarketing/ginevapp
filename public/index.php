@@ -18,6 +18,7 @@ require_once __DIR__ . '/../src/Controllers/CalendarioController.php';
 require_once __DIR__ . '/../src/Controllers/CitaController.php';
 require_once __DIR__ . '/../src/Controllers/HistoriaController.php';
 require_once __DIR__ . '/../src/Controllers/FinanzaServicioController.php';
+require_once __DIR__ . '/../src/Controllers/AjustesMedicoController.php';
 
 use App\Controllers\CatalogoController;
 use App\Controllers\PacienteController;
@@ -61,7 +62,13 @@ if ($uri === '/' || $uri === '/api') {
             "GET /api/tasa-bcv",
             "POST /api/tasa-bcv",
             "GET /api/finanzas",
-            "POST /api/finanzas"
+            "POST /api/finanzas",
+            "GET /api/medico/ajustes",
+            "POST /api/medico/perfil",
+            "POST /api/medico/calendarios",
+            "DELETE /api/medico/calendarios",
+            "POST /api/medico/asistentes",
+            "DELETE /api/medico/asistentes"
         ]
     ], JSON_UNESCAPED_UNICODE);
 
@@ -143,38 +150,27 @@ if ($uri === '/' || $uri === '/api') {
 } elseif ($uri === '/api/configuracion/tema' && $method === 'GET') {
     AuthController::obtenerTema();
 
-    if ($uri === '/api/medico/ajustes' && $method === 'GET') {
+} elseif ($uri === '/api/medico/ajustes' && $method === 'GET') {
     AjustesMedicoController::obtenerTodo();
-    exit;
-}
 
-if ($uri === '/api/medico/perfil' && $method === 'POST') {
+} elseif ($uri === '/api/medico/perfil' && $method === 'POST') {
     AjustesMedicoController::guardarPerfil();
-    exit;
-}
 
-if ($uri === '/api/medico/calendarios' && $method === 'POST') {
+} elseif ($uri === '/api/medico/calendarios' && $method === 'POST') {
     AjustesMedicoController::guardarCalendario();
-    exit;
-}
 
-if ($uri === '/api/medico/calendarios' && $method === 'DELETE') {
+} elseif ($uri === '/api/medico/calendarios' && $method === 'DELETE') {
     AjustesMedicoController::eliminarCalendario();
-    exit;
-}
 
-if ($uri === '/api/medico/asistentes' && $method === 'POST') {
+} elseif ($uri === '/api/medico/asistentes' && $method === 'POST') {
     AjustesMedicoController::crearAsistente();
-    exit;
-}
 
-if ($uri === '/api/medico/asistentes' && $method === 'DELETE') {
+} elseif ($uri === '/api/medico/asistentes' && $method === 'DELETE') {
     AjustesMedicoController::eliminarAsistente();
-    exit;
-}
 
 } elseif ($uri === '/api/tasa-bcv/sincronizar' && $method === 'GET') {
     FinanzaServicioController::sincronizarTasaBcv();
+
 } else {
     http_response_code(404);
     echo json_encode([
