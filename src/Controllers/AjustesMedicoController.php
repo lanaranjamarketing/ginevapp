@@ -7,11 +7,7 @@ use Exception;
 
 class AjustesMedicoController {
 
-    /**
-     * Garantiza que existan las tablas auxiliares de metadatos de médico si aún no están creadas
-     */
-    private static function asegurarTablasAuxiliares(PDO $pdo) {
-        $pdo->exec("CREATE TABLE IF NOT EXISTS gm_medico_meta (
+    private static function asegurarTablasAuxiliares(PDO $pdo) {$pdo->exec("CREATE TABLE IF NOT EXISTS gm_medico_meta (
             id INT AUTO_INCREMENT PRIMARY KEY,
             medico_id INT NOT NULL,
             meta_key VARCHAR(100) NOT NULL,
@@ -21,21 +17,19 @@ class AjustesMedicoController {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
     }
 
-    private static function obtenerMeta(PDO $pdo, int $medicoId): array {
-        $stmt = $pdo->prepare("SELECT meta_key, meta_value FROM gm_medico_meta WHERE medico_id = ?");
-        $stmt->execute([$medicoId]);
-        $metas = [];
-        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-            $metas[$row['meta_key']] = $row['meta_value'];
+    private static function obtenerMeta(PDO $pdo, int$medicoId): array {
+        $stmt =$pdo->prepare("SELECT meta_key, meta_value FROM gm_medico_meta WHERE medico_id = ?");
+        $stmt->execute([$medicoId]);$metas = [];
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {$metas[$row['meta_key']] =$row['meta_value'];
         }
         return $metas;
     }
 
-    private static function guardarMeta(PDO $pdo, int $medicoId, string $key, $value) {
-        $stmt = $pdo->prepare("INSERT INTO gm_medico_meta (medico_id, meta_key, meta_value)
+    private static function guardarMeta(PDO $pdo, int$medicoId, string $key,$value) {
+        $stmt =$pdo->prepare("INSERT INTO gm_medico_meta (medico_id, meta_key, meta_value)
                                VALUES (?, ?, ?)
                                ON DUPLICATE KEY UPDATE meta_value = VALUES(meta_value)");
-        $stmt->execute([$medicoId, $key, $value]);
+        $stmt->execute([$medicoId, $key,$value]);
     }
 
     /**
@@ -54,61 +48,93 @@ class AjustesMedicoController {
             self::asegurarTablasAuxiliares($pdo);
 
             // 1. Perfil base desde gm_usuarios_extendidos
-            $stmtPerf = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE user_id = ? OR id = ? LIMIT 1");
-            $stmtPerf->execute([$medicoId, $medicoId]);
-            $perfilBase = $stmtPerf->fetch(PDO::FETCH_ASSOC) ?: [];
+            $stmtPerf =$pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE user_id = ? OR id = ? LIMIT 1");
+            $stmtPerf->execute([$medicoId,$medicoId]);
+            $perfilBase =$stmtPerf->fetch(PDO::FETCH_ASSOC) ?: [];
+            $realMedicoId = !empty($perfilBase['user_id']) ? intval($perfilBase['user_id']) :$medicoId;
 
-            $realMedicoId = !empty($perfilBase['user_id']) ? intval($perfilBase['user_id']) : $medicoId;
+            // 2. Catálogo de especialidades desde gm_especialidades
+            $stmtEsp =$pdo->query("SELECT id, nombre, slug FROM gm_especialidades ORDER BY nombre ASC");
+            $especialidades = $stmtEsp ? $stmtEsp->fetchAll(PDO::FETCH_ASSOC) : [];
 
-            // 2. Metadatos profesionales (RIF, Sedes, Especialidad, MPPS, CMM, etc.)
-            $metas = self::obtenerMeta($pdo, $realMedicoId);
-            $sedes = [];
-            if (!empty($metas['sedes_multiples'])) {
-                $dec = json_decode($metas['sedes_multiples'], true);
-                if (is_array($dec)) {
-                    $sedes = $dec;
+            // 3. Metadatos de los 5 bloques
+            $metas = self::obtenerMeta($pdo,$realMedicoId);
+
+            $redes = json_decode($metas['redes_sociales'] ?? '{}', true);
+            if (!is_array($redes))$redes = [];
+
+            $sedesRaw = json_decode($metas['sedes_multiples'] ?? '[]', true);$sedes = [];
+            if (is_array($sedesRaw)) {
+                foreach ($sedesRaw as$s) {
+                    if (is_string($s)) {
+                        $sedes[] = ['pais' => 'Venezuela', 'estado' => '', 'direccion' =>$s, 'lat' => '', 'lng' => ''];
+                    } elseif (is_array($s)) {$sedes[] = [
+                            'pais'      => $s['pais'] ?? 'Venezuela',
+                            'estado'    => $s['estado'] ?? '',
+                            'direccion' => $s['direccion'] ?? '',
+                            'lat'       => $s['lat'] ?? '',
+                            'lng'       => $s['lng'] ?? '',
+                        ];
+                    }
                 }
             }
 
             $perfilCompleto = array_merge($perfilBase, [
-                'rif_tipo'     => $metas['rif_tipo'] ?? 'V',
-                'rif_num'      => $metas['rif_num'] ?? '',
-                'especialidad' => $metas['especialidad'] ?? ($perfilBase['especialidad'] ?? 'Ginecología y Obstetricia'),
-                'universidad'  => $metas['universidad'] ?? '',
-                'mpps'         => $metas['mpps'] ?? '',
-                'cmm'          => $metas['cmm'] ?? '',
-                'tagline'      => $metas['tagline'] ?? '',
-                'avatar_url'   => $metas['avatar_url'] ?? '',
-                'direccion'    => $metas['direccion_residencia'] ?? ($perfilBase['direccion_detalle'] ?? ''),
-                'sedes'        => $sedes
+                // Bloque 1: Perfil Público y Presencia Digital
+                'avatar_url'      => $metas['avatar_url'] ?? '',
+                'tagline'         => $metas['tagline'] ?? '',
+                'bio'             => $metas['bio'] ?? '',
+                'instagram'       => $redes['instagram'] ?? '',
+                'linkedin'        => $redes['linkedin'] ?? '',
+                'x_twitter'       => $redes['x_twitter'] ?? '',
+                'web'             => $redes['web'] ?? '',
+
+                // Bloque 2: Datos Personales
+                'segundo_nombre'  => $metas['segundo_nombre'] ?? '',
+                'segundo_apellido'=> $metas['segundo_apellido'] ?? '',
+
+                // Bloque 3: Datos Profesionales
+                'ocupacion'       => $metas['ocupacion'] ?? ($perfilBase['ocupacion'] ?? 'Médico Cirujano'),
+                'universidad'     => $metas['universidad'] ?? '',
+                'especialidad'    => $metas['especialidad'] ?? ($perfilBase['especialidad'] ?? ''),
+                'mpps'            => $metas['mpps'] ?? '',
+                'cmm'             => $metas['cmm'] ?? '',
+
+                // Bloque 4: Datos Fiscales
+                'rif_tipo'        => $metas['rif_tipo'] ?? 'V',
+                'rif_num'         => $metas['rif_num'] ?? '',
+                'pais_fiscal'     => $metas['pais_fiscal'] ?? 'Venezuela',
+                'estado_fiscal'   => $metas['estado_fiscal'] ?? '',
+                'direccion_fiscal'=> $metas['direccion_fiscal'] ?? ($perfilBase['direccion_detalle'] ?? ''),
+
+                // Bloque 5: Sedes de Atención
+                'sedes'           => $sedes
             ]);
 
-            // 3. Calendarios del médico
-            $stmtCal = $pdo->prepare("SELECT * FROM gm_calendarios WHERE medico_id = ? ORDER BY id DESC");
-            $stmtCal->execute([$realMedicoId]);
-            $calendariosRaw = $stmtCal->fetchAll(PDO::FETCH_ASSOC);
-            $calendarios = [];
-            foreach ($calendariosRaw as $cal) {
-                $cal['dias_config'] = !empty($cal['dias_config']) ? json_decode($cal['dias_config'], true) : [];
-                $calendarios[] = $cal;
+            // 4. Calendarios del médico
+            $stmtCal =$pdo->prepare("SELECT * FROM gm_calendarios WHERE medico_id = ? ORDER BY id DESC");
+            $stmtCal->execute([$realMedicoId]);$calendariosRaw = $stmtCal->fetchAll(PDO::FETCH_ASSOC);$calendarios = [];
+            foreach ($calendariosRaw as $cal) {$cal['dias_config'] = !empty($cal['dias_config']) ? json_decode($cal['dias_config'], true) : [];
+                $calendarios[] =$cal;
             }
 
-            // 4. Equipo de Asistentes vinculados al médico
-            $stmtAsis = $pdo->prepare("
+            // 5. Equipo de Asistentes
+            $stmtAsis =$pdo->prepare("
                 SELECT u.* FROM gm_usuarios_extendidos u
                 INNER JOIN gm_medico_meta m ON m.meta_key = CONCAT('asistente_', u.user_id) AND m.medico_id = ?
                 WHERE u.rol_medico = 'gm_asistente'
                 ORDER BY u.id DESC
             ");
             $stmtAsis->execute([$realMedicoId]);
-            $asistentes = $stmtAsis->fetchAll(PDO::FETCH_ASSOC);
+            $asistentes =$stmtAsis->fetchAll(PDO::FETCH_ASSOC);
 
             echo json_encode([
                 "status" => "success",
                 "data"   => [
-                    "perfil"      => $perfilCompleto,
-                    "calendarios" => $calendarios,
-                    "asistentes"  => $asistentes
+                    "perfil"         => $perfilCompleto,
+                    "especialidades" => $especialidades,
+                    "calendarios"    => $calendarios,
+                    "asistentes"     => $asistentes
                 ]
             ], JSON_UNESCAPED_UNICODE);
 
@@ -119,12 +145,13 @@ class AjustesMedicoController {
     }
 
     /**
-     * POST /api/medico/perfil
+     * POST /api/medico/perfil (Guardado autónomo por bloque)
      */
     public static function guardarPerfil() {
         try {
             $input = json_decode(file_get_contents('php://input'), true) ?: [];
             $medicoId = intval($input['medico_id'] ?? 0);
+            $seccion  = trim($input['seccion'] ?? 'todo');
 
             if ($medicoId <= 0) {
                 http_response_code(400);
@@ -135,56 +162,82 @@ class AjustesMedicoController {
             $pdo = Database::conectar();
             self::asegurarTablasAuxiliares($pdo);
 
-            $nombre    = trim($input['nombre'] ?? '');
-            $apellido  = trim($input['apellido'] ?? '');
-            $email     = trim($input['email'] ?? '');
-            $whatsapp  = trim($input['whatsapp'] ?? '');
-            $sexo      = trim($input['sexo'] ?? 'Femenino');
-            $fnac      = trim($input['fecha_nacimiento'] ?? '');
+            switch ($seccion) {
+                case 'publico':
+                    self::guardarMeta($pdo, $medicoId, 'avatar_url', trim($input['avatar_url'] ?? ''));
+                    self::guardarMeta($pdo, $medicoId, 'tagline', trim($input['tagline'] ?? ''));
+                    self::guardarMeta($pdo, $medicoId, 'bio', trim($input['bio'] ?? ''));
+                    $redes = [
+                        'instagram' => trim($input['instagram'] ?? ''),
+                        'linkedin'  => trim($input['linkedin'] ?? ''),
+                        'x_twitter' => trim($input['x_twitter'] ?? ''),
+                        'web'       => trim($input['web'] ?? ''),
+                    ];
+                    self::guardarMeta($pdo, $medicoId, 'redes_sociales', json_encode($redes, JSON_UNESCAPED_UNICODE));
+                    $msg = "Perfil público y presencia digital actualizados.";
+                    break;
 
-            // Actualizar datos base en gm_usuarios_extendidos
-            $stmtUpd = $pdo->prepare("
-                UPDATE gm_usuarios_extendidos
-                SET nombre = ?, apellido = ?, email = ?, whatsapp = ?, sexo = ?, fecha_nacimiento = ?
-                WHERE user_id = ? OR id = ?
-            ");
-            $stmtUpd->execute([
-                $nombre,
-                $apellido,
-                $email,
-                $whatsapp,
-                $sexo,
-                !empty($fnac) ? $fnac : null,
-                $medicoId,
-                $medicoId
-            ]);
+                case 'personales':
+                    $nombre   = trim($input['nombre'] ?? '');
+                    $apellido = trim($input['apellido'] ?? '');
+                    $sexo     = trim($input['sexo'] ?? 'Femenino');
+                    $fnac     = trim($input['fecha_nacimiento'] ?? '');
 
-            // Guardar metadatos profesionales y sedes
-            $sedesLimpias = [];
-            if (isset($input['sedes']) && is_array($input['sedes'])) {
-                foreach ($input['sedes'] as $s) {
-                    $sTrim = trim((string)$s);
-                    if ($sTrim !== '') {
-                        $sedesLimpias[] = $sTrim;
+                    $stmt = $pdo->prepare("
+                        UPDATE gm_usuarios_extendidos
+                        SET nombre = ?, apellido = ?, sexo = ?, fecha_nacimiento = ?
+                        WHERE user_id = ? OR id = ?
+                    ");
+                    $stmt->execute([$nombre, $apellido, $sexo, !empty($fnac) ? $fnac : null, $medicoId, $medicoId]);
+
+                    self::guardarMeta($pdo, $medicoId, 'segundo_nombre', trim($input['segundo_nombre'] ?? ''));
+                    self::guardarMeta($pdo, $medicoId, 'segundo_apellido', trim($input['segundo_apellido'] ?? ''));
+                    $msg = "Datos personales actualizados.";
+                    break;
+
+                case 'profesionales':
+                    self::guardarMeta($pdo, $medicoId, 'ocupacion', trim($input['ocupacion'] ?? ''));
+                    self::guardarMeta($pdo, $medicoId, 'universidad', trim($input['universidad'] ?? ''));
+                    self::guardarMeta($pdo, $medicoId, 'especialidad', trim($input['especialidad'] ?? ''));
+                    self::guardarMeta($pdo, $medicoId, 'mpps', trim($input['mpps'] ?? ''));
+                    self::guardarMeta($pdo, $medicoId, 'cmm', trim($input['cmm'] ?? ''));
+                    $msg = "Datos profesionales actualizados.";
+                    break;
+
+                case 'fiscales':
+                    self::guardarMeta($pdo, $medicoId, 'rif_tipo', trim($input['rif_tipo'] ?? 'V'));
+                    self::guardarMeta($pdo, $medicoId, 'rif_num', trim($input['rif_num'] ?? ''));
+                    self::guardarMeta($pdo, $medicoId, 'pais_fiscal', trim($input['pais_fiscal'] ?? 'Venezuela'));
+                    self::guardarMeta($pdo, $medicoId, 'estado_fiscal', trim($input['estado_fiscal'] ?? ''));
+                    self::guardarMeta($pdo, $medicoId, 'direccion_fiscal', trim($input['direccion_fiscal'] ?? ''));
+                    $msg = "Datos fiscales actualizados.";
+                    break;
+
+                case 'sedes':
+                    $sedesLimpias = [];
+                    if (isset($input['sedes']) && is_array($input['sedes'])) {
+                        foreach ($input['sedes'] as $s) {
+                            if (is_array($s) && trim($s['direccion'] ?? '') !== '') {
+                                $sedesLimpias[] = [
+                                    'pais'      => trim($s['pais'] ?? 'Venezuela'),
+                                    'estado'    => trim($s['estado'] ?? ''),
+                                    'direccion' => trim($s['direccion'] ?? ''),
+                                    'lat'       => trim($s['lat'] ?? ''),
+                                    'lng'       => trim($s['lng'] ?? ''),
+                                ];
+                            }
+                        }
                     }
-                }
+                    self::guardarMeta($pdo, $medicoId, 'sedes_multiples', json_encode($sedesLimpias, JSON_UNESCAPED_UNICODE));
+                    $msg = "Sedes de atención actualizadas.";
+                    break;
+
+                default:
+                    $msg = "Cambios guardados.";
+                    break;
             }
 
-            self::guardarMeta($pdo, $medicoId, 'rif_tipo', trim($input['rif_tipo'] ?? 'V'));
-            self::guardarMeta($pdo, $medicoId, 'rif_num', trim($input['rif_num'] ?? ''));
-            self::guardarMeta($pdo, $medicoId, 'especialidad', trim($input['especialidad'] ?? ''));
-            self::guardarMeta($pdo, $medicoId, 'universidad', trim($input['universidad'] ?? ''));
-            self::guardarMeta($pdo, $medicoId, 'mpps', trim($input['mpps'] ?? ''));
-            self::guardarMeta($pdo, $medicoId, 'cmm', trim($input['cmm'] ?? ''));
-            self::guardarMeta($pdo, $medicoId, 'tagline', trim($input['tagline'] ?? ''));
-            self::guardarMeta($pdo, $medicoId, 'avatar_url', trim($input['avatar_url'] ?? ''));
-            self::guardarMeta($pdo, $medicoId, 'direccion_residencia', trim($input['direccion'] ?? ''));
-            self::guardarMeta($pdo, $medicoId, 'sedes_multiples', json_encode($sedesLimpias, JSON_UNESCAPED_UNICODE));
-
-            echo json_encode([
-                "status"  => "success",
-                "mensaje" => "Perfil profesional y sedes actualizados correctamente."
-            ], JSON_UNESCAPED_UNICODE);
+            echo json_encode(["status" => "success", "mensaje" => $msg], JSON_UNESCAPED_UNICODE);
 
         } catch (Exception $e) {
             http_response_code(500);
@@ -210,7 +263,6 @@ class AjustesMedicoController {
             $pdo = Database::conectar();
             self::asegurarTablasAuxiliares($pdo);
 
-            // Validar requisito obligatorio: RIF y al menos 1 sede
             $metas = self::obtenerMeta($pdo, $medicoId);
             $rifNum = trim($metas['rif_num'] ?? '');
             $sedes  = json_decode($metas['sedes_multiples'] ?? '[]', true);
@@ -219,7 +271,7 @@ class AjustesMedicoController {
                 http_response_code(422);
                 echo json_encode([
                     "status"  => "error",
-                    "mensaje" => "Debe registrar su RIF y al menos una Sede en su perfil antes de crear calendarios."
+                    "mensaje" => "Debe registrar su RIF en Datos Fiscales y al menos una Sede de Atención antes de crear calendarios."
                 ], JSON_UNESCAPED_UNICODE);
                 return;
             }
@@ -320,18 +372,14 @@ class AjustesMedicoController {
             $pdo = Database::conectar();
             self::asegurarTablasAuxiliares($pdo);
 
-            // Verificar si la cédula o WhatsApp ya existen
             $stmtCheck = $pdo->prepare("SELECT id, user_id FROM gm_usuarios_extendidos WHERE cedula = ? OR whatsapp = ? LIMIT 1");
             $stmtCheck->execute([$cedula, $whatsapp]);
-            $existente = $stmtCheck->fetch(PDO::FETCH_ASSOC);
-
-            if ($existente) {
+            if ($stmtCheck->fetch(PDO::FETCH_ASSOC)) {
                 http_response_code(409);
                 echo json_encode(["status" => "error", "mensaje" => "Ya existe un usuario registrado con esa cédula o WhatsApp."], JSON_UNESCAPED_UNICODE);
                 return;
             }
 
-            // Generar un user_id único
             $stmtMax = $pdo->query("SELECT COALESCE(MAX(user_id), 1000) + 1 AS siguiente FROM gm_usuarios_extendidos");
             $nuevoUserId = intval($stmtMax->fetch(PDO::FETCH_ASSOC)['siguiente']);
 
@@ -342,7 +390,6 @@ class AjustesMedicoController {
             ");
             $stmtIns->execute([$nuevoUserId, $cedula, $whatsapp, $nombre, $apellido, $email]);
 
-            // Vincular exclusivamente al médico
             self::guardarMeta($pdo, $medicoId, 'asistente_' . $nuevoUserId, (string)$nuevoUserId);
 
             echo json_encode([
