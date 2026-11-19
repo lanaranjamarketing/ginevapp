@@ -15,7 +15,7 @@ class CatalogoController {
             $estatusCita         = $pdo->query("SELECT id, nombre, slug, color_hex FROM gm_estatus_cita ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
             $estatusPaciente     = $pdo->query("SELECT id, nombre, slug FROM gm_estatus_paciente ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
             $estatusHistoria     = $pdo->query("SELECT id, nombre, slug FROM gm_estatus_historia ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
-
+            $especialidades      = $pdo->query("SELECT id, nombre, slug FROM gm_especialidades ORDER BY nombre ASC")->fetchAll(PDO::FETCH_ASSOC);
             echo json_encode([
                 "status" => "success",
                 "data" => [
@@ -23,7 +23,8 @@ class CatalogoController {
                     "tipos_usuario"        => $tiposUsuario,
                     "estatus_cita"         => $estatusCita,
                     "estatus_paciente"     => $estatusPaciente,
-                    "estatus_historia"     => $estatusHistoria
+                    "estatus_historia"     => $estatusHistoria,
+                    "especialidades"       => $especialidades
                 ]
             ], JSON_UNESCAPED_UNICODE);
 

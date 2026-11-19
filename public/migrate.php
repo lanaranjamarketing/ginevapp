@@ -256,6 +256,27 @@ try {
             `duracion_minutos` int(5) DEFAULT 0,
             PRIMARY KEY (`id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;"
+        
+        // Tabla Especialidades Médicas
+        "CREATE TABLE IF NOT EXISTS `gm_especialidades` (
+            `id` int(11) NOT NULL AUTO_INCREMENT,
+            `nombre` varchar(100) NOT NULL,
+            `slug` varchar(100) NOT NULL,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `slug` (`slug`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;",
+
+        "INSERT IGNORE INTO `gm_especialidades` (`nombre`, `slug`) VALUES
+            ('Ginecología y Obstetricia', 'ginecologia_obstetricia'),
+            ('Medicina General', 'medicina_general'),
+            ('Pediatría', 'pediatria'),
+            ('Cardiología', 'cardiologia'),
+            ('Dermatología', 'dermatologia'),
+            ('Endocrinología', 'endocrinologia'),
+            ('Medicina Interna', 'medicina_interna'),
+            ('Mastología', 'mastologia'),
+            ('Urología', 'urologia'),
+            ('Nutrición y Dietética', 'nutricion_dietetica');",
     ];
 
     foreach ($queries as $sql) {
