@@ -431,4 +431,92 @@ class AjustesMedicoController {
             echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
         }
     }
+    /**
+     * POST /api/medico/avatar (Multipart file upload hacia public/uploads/avatars/)
+     */
+    public static function subirAvatar() {
+        try {
+            $idParam = intval($_POST['medico_id'] ?? 0);
+            if ($idParam <= 0) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "ID de médico requerido"], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            if (!isset($_FILES['avatar']) || $_FILES['avatar']['error'] !== UPLOAD_ERR_OK) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "No se recibió ninguna imagen válida"], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $archivo = $_FILES['avatar'];
+            $finfo = finfo_open(FILEINFO_MIME_TYPE);
+            $mime = finfo_file($finfo, $archivo['tmp_name']);
+            finfo_close($finfo);
+
+            $permitidos = [
+                'image/jpeg' => 'jpg',
+                'image/png'  => 'png',
+                'image/webp' => 'webp',
+            ];
+
+            if (!isset($permitidos[$mime])) {
+                http_response_code(415);
+                echo json_encode(["status" => "error", "mensaje" => "Formato no permitido. Use JPG, PNG o WEBP."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            if ($archivo['size'] > 5 * 1024 * 1024) {
+                http_response_code(413);
+                echo json_encode(["status" => "error", "mensaje" => "La imagen supera el límite de 5 MB."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo = Database::conectar();
+            self::asegurarTablasAuxiliares($pdo);
+            $medicoId = self::resolverMedicoId($pdo, $idParam);
+
+            // Crear carpeta pública public/uploads/avatars/ si no existe
+            $dirDestino = __DIR__ . '/../../public/uploads/avatars';
+            if (!is_dir($dirDestino)) {
+                mkdir($dirDestino, 0755, true);
+            }
+
+            // Eliminar avatar previo local si existía
+            $metas = self::obtenerMeta($pdo, $medicoId);
+            if (!empty($metas['avatar_url'])) {
+                $archivoViejo = basename(parse_url($metas['avatar_url'], PHP_URL_PATH));
+                $rutaVieja = $dirDestino . '/' . $archivoViejo;
+                if ($archivoViejo && file_exists($rutaVieja)) {
+                    @unlink($rutaVieja);
+                }
+            }
+
+            $ext = $permitidos[$mime];
+            $nombreArchivo = 'medico_' . $medicoId . '_' . time() . '.' . $ext;
+            $rutaFinal = $dirDestino . '/' . $nombreArchivo;
+
+            if (!move_uploaded_file($archivo['tmp_name'], $rutaFinal)) {
+                http_response_code(500);
+                echo json_encode(["status" => "error", "mensaje" => "No se pudo guardar la imagen en el servidor."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $protocolo = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+            $host = $_SERVER['HTTP_HOST'] ?? 'api.ginevapp.com';
+            $urlPublica = "$protocolo://$host/uploads/avatars/$nombreArchivo";
+
+            self::guardarMeta($pdo, $medicoId, 'avatar_url', $urlPublica);
+
+            echo json_encode([
+                "status"     => "success",
+                "mensaje"    => "Foto de perfil actualizada correctamente.",
+                "avatar_url" => $urlPublica
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
 }

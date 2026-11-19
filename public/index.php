@@ -170,6 +170,9 @@ if ($uri === '/' || $uri === '/api') {
 
 } elseif ($uri === '/api/tasa-bcv/sincronizar' && $method === 'GET') {
     FinanzaServicioController::sincronizarTasaBcv();
+    
+    } elseif ($uri === '/api/medico/avatar' && $method === 'POST') {
+    AjustesMedicoController::subirAvatar();
 
 } else {
     http_response_code(404);
