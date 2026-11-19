@@ -360,4 +360,19 @@ class AuthController {
             echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
         }
     }
+public static function obtenerTema() {
+    try {
+        $pdo = Database::conectar();
+        self::asegurarTablas($pdo);
+        $stmt = $pdo->query("SELECT `clave`, `valor` FROM `gm_configuracion` WHERE `clave` LIKE 'theme_%'");
+        $tema = [];
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $tema[$row['clave']] = $row['valor'];
+        }
+        echo json_encode(["status" => "success", "tema" => $tema], JSON_UNESCAPED_UNICODE);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+    }
+}
 }

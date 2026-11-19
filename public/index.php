@@ -139,6 +139,9 @@ if ($uri === '/' || $uri === '/api') {
 } elseif ($uri === '/api/finanzas' && $method === 'POST') {
     FinanzaServicioController::registrarMovimiento($input);
 
+} elseif ($uri === '/api/configuracion/tema' && $method === 'GET') {
+    AuthController::obtenerTema();
+
 } elseif ($uri === '/api/tasa-bcv/sincronizar' && $method === 'GET') {
     FinanzaServicioController::sincronizarTasaBcv();
 } else {
