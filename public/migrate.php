@@ -276,77 +276,57 @@ try {
             `hora_fin` datetime DEFAULT NULL,
             `duracion_minutos` int(5) DEFAULT 0,
             PRIMARY KEY (`id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;",
+
+        // =========================================================================
+        // 3. TABLA DE CONFIGURACIÓN GLOBAL Y TOKENS DINÁMICOS DE TEMA
+        // =========================================================================
+        "CREATE TABLE IF NOT EXISTS `gm_configuracion` (
+            `id` int(11) NOT NULL AUTO_INCREMENT,
+            `clave` varchar(100) NOT NULL UNIQUE,
+            `valor` text NOT NULL,
+            `descripcion` varchar(255) DEFAULT NULL,
+            `actualizado_en` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `clave_idx` (`clave`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;"
-
-        CREATE TABLE IF NOT EXISTS `gm_configuracion` (
-    `id` int(11) NOT NULL AUTO_INCREMENT,
-    `clave` varchar(100) NOT NULL UNIQUE,
-    `valor` text NOT NULL,
-    `descripcion` varchar(255) DEFAULT NULL,
-    `actualizado_en` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    PRIMARY KEY (`id`),
-    UNIQUE KEY `clave_idx` (`clave`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-INSERT INTO `gm_configuracion` (`clave`, `valor`, `descripcion`) VALUES
-('evolution_url', 'https://auto-evolution-api.tidwyf.easypanel.host', 'Server URL (Evolution API)'),
-('evolution_instance', 'la naranja', 'Nombre de la instancia en Evolution API'),
-('evolution_apikey', '429683C4C977415CAAFCCE10F7D57E11', 'API Key de Evolution API'),
-('whatsapp_plantilla_otp', 'Su código de acceso es: {codigo}', 'Plantilla del mensaje OTP con variable {codigo}')
-ON DUPLICATE KEY UPDATE `valor` = VALUES(`valor`);
-
     ];
 
     foreach ($queries as $sql) {
         $pdo->exec($sql);
     }
 
+    // Poblar configuración inicial (Evolution API + Tokens de Diseño GinevApp)
+    $stmtConfig = $pdo->prepare("INSERT INTO `gm_configuracion` (`clave`, `valor`, `descripcion`)
+        VALUES (:clave, :valor, :descripcion)
+        ON DUPLICATE KEY UPDATE `descripcion` = VALUES(`descripcion`)");
+
+    $configuracionesIniciales = [
+        ['evolution_url', 'https://auto-evolution-api.tidwyf.easypanel.host', 'Server URL (Evolution API)'],
+        ['evolution_instance', 'la naranja', 'Instancia de Evolution API'],
+        ['evolution_apikey', '429683C4C977415CAAFCCE10F7D57E11', 'API Key de Evolution API'],
+        ['whatsapp_plantilla_otp', 'Su código de acceso es: {codigo}', 'Plantilla del Mensaje OTP'],
+        ['theme_primary', '#C2186B', 'Color Primario (Botones y Acentos)'],
+        ['theme_primary_dark', '#4A0E2E', 'Color Oscuro (Barra Superior Web)'],
+        ['theme_secondary', '#F45D5D', 'Color Secundario / Degradado'],
+        ['theme_background', '#FDF6F8', 'Color de Fondo General'],
+        ['theme_surface', '#FFFFFF', 'Color de Tarjetas / Cards'],
+        ['theme_text_primary', '#2D1422', 'Color de Texto Principal'],
+        ['theme_text_secondary', '#7A5C6B', 'Color de Texto Secundario']
+    ];
+
+    foreach ($configuracionesIniciales as $cfg) {
+        $stmtConfig->execute([
+            ':clave'       => $cfg[0],
+            ':valor'       => $cfg[1],
+            ':descripcion' => $cfg[2]
+        ]);
+    }
+
     echo json_encode([
         "status" => "success",
-        "mensaje" => "¡Todas las tablas del sistema médico y los catálogos fueron creados y poblados exitosamente!"
+        "mensaje" => "¡Todas las tablas del sistema médico, catálogos y configuración dinámica fueron creados y poblados exitosamente!"
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
-
-    // =========================================================================
-// TABLA DE CONFIGURACIÓN GLOBAL Y TOKENS DINÁMICOS DE TEMA (PANEL MASTER)
-// =========================================================================
-$pdo->exec("CREATE TABLE IF NOT EXISTS `gm_configuracion` (
-    `id` int(11) NOT NULL AUTO_INCREMENT,
-    `clave` varchar(100) NOT NULL UNIQUE,
-    `valor` text NOT NULL,
-    `descripcion` varchar(255) DEFAULT NULL,
-    `actualizado_en` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    PRIMARY KEY (`id`),
-    UNIQUE KEY `clave_idx` (`clave`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
-
-$stmtConfig = $pdo->prepare("INSERT INTO `gm_configuracion` (`clave`, `valor`, `descripcion`)
-    VALUES (:clave, :valor, :descripcion)
-    ON DUPLICATE KEY UPDATE `descripcion` = VALUES(`descripcion`)");
-
-$configuracionesIniciales = [
-    // Credenciales Evolution API (WhatsApp OTP)
-    ['evolution_url', 'https://auto-evolution-api.tidwyf.easypanel.host', 'Server URL (Evolution API)'],
-    ['evolution_instance', 'la naranja', 'Instancia de Evolution API'],
-    ['evolution_apikey', '429683C4C977415CAAFCCE10F7D57E11', 'API Key de Evolution API'],
-    ['whatsapp_plantilla_otp', 'Su código de acceso es: {codigo}', 'Plantilla del Mensaje OTP'],
-
-    // Tokens de Diseño y Tema Dinámico (Identidad GinevApp)
-    ['theme_primary', '#C2186B', 'Color Primario (Botones y Acentos)'],
-    ['theme_primary_dark', '#4A0E2E', 'Color Oscuro (Barra Superior Web)'],
-    ['theme_secondary', '#F45D5D', 'Color Secundario / Degradado'],
-    ['theme_background', '#FDF6F8', 'Color de Fondo General'],
-    ['theme_surface', '#FFFFFF', 'Color de Tarjetas / Cards'],
-    ['theme_text_primary', '#2D1422', 'Color de Texto Principal'],
-    ['theme_text_secondary', '#7A5C6B', 'Color de Texto Secundario']
-];
-
-foreach ($configuracionesIniciales as $cfg) {
-    $stmtConfig->execute([
-        ':clave'       => $cfg[0],
-        ':valor'       => $cfg[1],
-        ':descripcion' => $cfg[2]
-    ]);
-}
 
 } catch (PDOException $e) {
     http_response_code(500);
