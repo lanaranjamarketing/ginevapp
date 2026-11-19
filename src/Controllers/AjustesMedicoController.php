@@ -103,9 +103,19 @@ class AjustesMedicoController {
                 }
             }
 
+            // Normalizar avatar_url si quedó guardado con la ruta antigua /uploads/avatars/
+            $avatarUrl = $metas['avatar_url'] ?? '';
+            if (!empty($avatarUrl) && strpos($avatarUrl, '/uploads/avatars/') !== false) {
+                $archivoAvatar = basename(parse_url($avatarUrl, PHP_URL_PATH));
+                $host = $_SERVER['HTTP_HOST'] ?? 'api.ginevapp.com';
+                if (!empty($archivoAvatar)) {
+                    $avatarUrl = "https://$host/api/medico/avatar/ver?file=$archivoAvatar";
+                }
+            }
+
             $perfilCompleto = array_merge($perfilBase, [
                 'user_id'          => $realMedicoId,
-                'avatar_url'       => $metas['avatar_url'] ?? '',
+                'avatar_url'       => $avatarUrl,
                 'tagline'          => !empty($perfilBase['tagline']) ? $perfilBase['tagline'] : ($metas['tagline'] ?? ''),
                 'bio'              => $metas['bio'] ?? '',
                 'redes_sociales'   => $redesLista,
@@ -156,6 +166,30 @@ class AjustesMedicoController {
             http_response_code(500);
             echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
         }
+    }
+
+    /**
+     * GET /api/medico/avatar/ver?file=medico_X.jpg (Sirve imagen con headers CORS activos)
+     */
+    public static function verAvatar() {
+        @ini_set('display_errors', '0');
+        if (ob_get_length()) ob_end_clean();
+
+        $archivo = basename($_GET['file'] ?? '');
+        $ruta = __DIR__ . '/../../public/uploads/avatars/' . $archivo;
+
+        if ($archivo !== '' && file_exists($ruta)) {
+            $info = @getimagesize($ruta);
+            header('Content-Type: ' . ($info['mime'] ?? 'image/jpeg'));
+            header('Content-Length: ' . filesize($ruta));
+            header('Cache-Control: public, max-age=86400');
+            readfile($ruta);
+            exit;
+        }
+
+        http_response_code(404);
+        echo json_encode(["status" => "error", "mensaje" => "Imagen no encontrada"], JSON_UNESCAPED_UNICODE);
+        exit;
     }
 
     /**
@@ -228,11 +262,19 @@ class AjustesMedicoController {
                 @chmod($dirDestino, 0777);
             }
 
-            // Eliminar avatar previo local si existía
+            // Eliminar avatar previo local si existía (soporta tanto URL antigua como query ?file=)
             $metas = self::obtenerMeta($pdo, $medicoId);
             if (!empty($metas['avatar_url'])) {
-                $pathPrevio = parse_url($metas['avatar_url'], PHP_URL_PATH);
-                $archivoViejo = $pathPrevio ? basename($pathPrevio) : '';
+                $archivoViejo = '';
+                $queryStr = parse_url($metas['avatar_url'], PHP_URL_QUERY);
+                if ($queryStr) {
+                    parse_str($queryStr, $qParams);
+                    $archivoViejo = basename($qParams['file'] ?? '');
+                }
+                if (empty($archivoViejo)) {
+                    $pathPrevio = parse_url($metas['avatar_url'], PHP_URL_PATH);
+                    $archivoViejo = $pathPrevio ? basename($pathPrevio) : '';
+                }
                 $rutaVieja = $dirDestino . '/' . $archivoViejo;
                 if ($archivoViejo && file_exists($rutaVieja)) {
                     @unlink($rutaVieja);
@@ -253,9 +295,8 @@ class AjustesMedicoController {
                 return;
             }
 
-            $protocolo = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
             $host = $_SERVER['HTTP_HOST'] ?? 'api.ginevapp.com';
-            $urlPublica = "$protocolo://$host/uploads/avatars/$nombreArchivo";
+            $urlPublica = "https://$host/api/medico/avatar/ver?file=$nombreArchivo";
 
             self::guardarMeta($pdo, $medicoId, 'avatar_url', $urlPublica);
 

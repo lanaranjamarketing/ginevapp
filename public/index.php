@@ -171,8 +171,21 @@ if ($uri === '/' || $uri === '/api') {
 } elseif ($uri === '/api/tasa-bcv/sincronizar' && $method === 'GET') {
     FinanzaServicioController::sincronizarTasaBcv();
     
-    } elseif ($uri === '/api/medico/avatar' && $method === 'POST') {
+} elseif ($uri === '/api/medico/avatar' && $method === 'POST') {
     AjustesMedicoController::subirAvatar();
+
+    } elseif ($uri === '/api/medico/avatar/ver' && $method === 'GET') {
+    $archivo = basename($_GET['file'] ?? '');
+    $ruta = __DIR__ . '/uploads/avatars/' . $archivo;
+    if ($archivo !== '' && file_exists($ruta)) {
+        $info = @getimagesize($ruta);
+        header('Content-Type: ' . ($info['mime'] ?? 'image/jpeg'));
+        header('Cache-Control: public, max-age=86400');
+        readfile($ruta);
+        exit;
+    }
+    http_response_code(404);
+    exit;
 
 } else {
     http_response_code(404);
