@@ -8,10 +8,18 @@ use Exception;
 class FinanzaServicioController {
 
     private static function asegurarColumnaEstado(PDO $pdo) {
-        try {
-            $pdo->exec("ALTER TABLE gm_servicios ADD COLUMN IF NOT EXISTS estado VARCHAR(20) DEFAULT 'activo'");
-        } catch (Exception $e) {
-            // Ignorar si ya existe en motores sin IF NOT EXISTS
+        $stmt = $pdo->prepare("
+            SELECT COUNT(*)
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'gm_servicios'
+              AND COLUMN_NAME = 'estado'
+        ");
+        $stmt->execute();
+        $existe = (int)$stmt->fetchColumn() > 0;
+
+        if (!$existe) {
+            $pdo->exec("ALTER TABLE gm_servicios ADD COLUMN estado VARCHAR(20) DEFAULT 'activo'");
         }
     }
 
