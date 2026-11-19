@@ -179,7 +179,10 @@ if ($uri === '/' || $uri === '/api') {
     FinanzaServicioController::cambiarEstadoServicio($input);
 } elseif ($uri === '/api/servicios' && $method === 'DELETE') {
     FinanzaServicioController::eliminarServicio();
-    
+} elseif ($uri === '/api/pacientes' && $method === 'GET') {
+    PacienteController::listarPacientes();
+} elseif ($uri === '/api/pacientes' && $method === 'POST') {
+    PacienteController::crearPaciente($input);    
 } elseif ($uri === '/api/medico/avatar' && $method === 'POST') {
     AjustesMedicoController::subirAvatar();
 
