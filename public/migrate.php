@@ -277,6 +277,24 @@ try {
             `duracion_minutos` int(5) DEFAULT 0,
             PRIMARY KEY (`id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;"
+
+        CREATE TABLE IF NOT EXISTS `gm_configuracion` (
+    `id` int(11) NOT NULL AUTO_INCREMENT,
+    `clave` varchar(100) NOT NULL UNIQUE,
+    `valor` text NOT NULL,
+    `descripcion` varchar(255) DEFAULT NULL,
+    `actualizado_en` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `clave_idx` (`clave`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT INTO `gm_configuracion` (`clave`, `valor`, `descripcion`) VALUES
+('evolution_url', 'https://auto-evolution-api.tidwyf.easypanel.host', 'Server URL (Evolution API)'),
+('evolution_instance', 'la naranja', 'Nombre de la instancia en Evolution API'),
+('evolution_apikey', '429683C4C977415CAAFCCE10F7D57E11', 'API Key de Evolution API'),
+('whatsapp_plantilla_otp', 'Su código de acceso es: {codigo}', 'Plantilla del mensaje OTP con variable {codigo}')
+ON DUPLICATE KEY UPDATE `valor` = VALUES(`valor`);
+
     ];
 
     foreach ($queries as $sql) {
