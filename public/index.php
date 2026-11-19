@@ -26,6 +26,7 @@ use App\Controllers\CalendarioController;
 use App\Controllers\CitaController;
 use App\Controllers\HistoriaController;
 use App\Controllers\FinanzaServicioController;
+use App\Controllers\AjustesMedicoController;
 
 $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $method = $_SERVER['REQUEST_METHOD'];
@@ -141,6 +142,36 @@ if ($uri === '/' || $uri === '/api') {
 
 } elseif ($uri === '/api/configuracion/tema' && $method === 'GET') {
     AuthController::obtenerTema();
+
+    if ($uri === '/api/medico/ajustes' && $method === 'GET') {
+    AjustesMedicoController::obtenerTodo();
+    exit;
+}
+
+if ($uri === '/api/medico/perfil' && $method === 'POST') {
+    AjustesMedicoController::guardarPerfil();
+    exit;
+}
+
+if ($uri === '/api/medico/calendarios' && $method === 'POST') {
+    AjustesMedicoController::guardarCalendario();
+    exit;
+}
+
+if ($uri === '/api/medico/calendarios' && $method === 'DELETE') {
+    AjustesMedicoController::eliminarCalendario();
+    exit;
+}
+
+if ($uri === '/api/medico/asistentes' && $method === 'POST') {
+    AjustesMedicoController::crearAsistente();
+    exit;
+}
+
+if ($uri === '/api/medico/asistentes' && $method === 'DELETE') {
+    AjustesMedicoController::eliminarAsistente();
+    exit;
+}
 
 } elseif ($uri === '/api/tasa-bcv/sincronizar' && $method === 'GET') {
     FinanzaServicioController::sincronizarTasaBcv();
