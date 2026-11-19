@@ -257,7 +257,7 @@ try {
             PRIMARY KEY (`id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;"
         
-        // Tabla Especialidades Médicas
+// Tabla Especialidades Médicas
         "CREATE TABLE IF NOT EXISTS `gm_especialidades` (
             `id` int(11) NOT NULL AUTO_INCREMENT,
             `nombre` varchar(100) NOT NULL,
