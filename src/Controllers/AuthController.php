@@ -121,11 +121,11 @@ class AuthController {
             $waOculto = substr($whatsappDestino, 0, 4) . '****' . substr($whatsappDestino, -3);
 
             echo json_encode([
-                "status"           => "success",
-                "mensaje"          => "Código OTP enviado con éxito a su WhatsApp.",
-                "whatsapp"         => $whatsappDestino,
-                "whatsapp_oculto"  => $waOculto,
-                "expira_segundos"  => 300
+                "status"          => "success",
+                "mensaje"         => "Código OTP enviado con éxito a su WhatsApp.",
+                "whatsapp"        => $whatsappDestino,
+                "whatsapp_oculto" => $waOculto,
+                "expira_segundos" => 300
             ], JSON_UNESCAPED_UNICODE);
 
         } catch (Exception $e) {
@@ -194,6 +194,136 @@ class AuthController {
                 "status"  => "success",
                 "mensaje" => "Autenticación exitosa.",
                 "token"   => $token,
+                "usuario" => $usuario
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * POST /api/auth/registro-enviar-otp
+     * Paso 1 y 2 del registro: valida que identificación y WhatsApp sean únicos y envía código OTP
+     */
+    public static function registroEnviarOtp($input) {
+        try {
+            $cedula   = trim($input['cedula'] ?? '');
+            $whatsapp = preg_replace('/[^0-9]/', '', trim($input['whatsapp'] ?? ''));
+
+            if (empty($cedula) || empty($whatsapp)) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "El número de identificación y el WhatsApp son obligatorios."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo = Database::conectar();
+            self::asegurarTablaOtp($pdo);
+
+            // Verificar que no exista previamente la identificación ni el WhatsApp
+            $check = $pdo->prepare("SELECT id FROM gm_usuarios_extendidos WHERE cedula = :ced OR whatsapp = :wa LIMIT 1");
+            $check->execute([':ced' => $cedula, ':wa' => $whatsapp]);
+            if ($check->fetch()) {
+                http_response_code(409);
+                echo json_encode(["status" => "error", "mensaje" => "El número de identificación o el WhatsApp ya se encuentran registrados en el sistema."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $codigoOtp = str_pad((string)random_int(100000, 999999), 6, '0', STR_PAD_LEFT);
+            $expiraEn  = date('Y-m-d H:i:s', strtotime('+5 minutes'));
+
+            $pdo->prepare("DELETE FROM gm_otp_codes WHERE whatsapp = :wa")->execute([':wa' => $whatsapp]);
+            $ins = $pdo->prepare("INSERT INTO gm_otp_codes (whatsapp, codigo, expira_en) VALUES (:wa, :cod, :exp)");
+            $ins->execute([':wa' => $whatsapp, ':cod' => $codigoOtp, ':exp' => $expiraEn]);
+
+            $mensaje = "🏥 *GinevApp* - Tu código de confirmación para completar tu registro es: *{$codigoOtp}*\n\nExpira en 5 minutos.";
+            self::enviarWhatsApp($whatsapp, $mensaje);
+
+            echo json_encode([
+                "status"   => "success",
+                "mensaje"  => "Por favor, revise su WhatsApp. Le hemos enviado un código de confirmación.",
+                "whatsapp" => $whatsapp
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * POST /api/auth/registro-completar
+     * Paso 3 del registro: valida el OTP, crea el paciente en gm_usuarios_extendidos e inicia sesión
+     */
+    public static function registroCompletar($input) {
+        try {
+            $whatsapp = preg_replace('/[^0-9]/', '', trim($input['whatsapp'] ?? ''));
+            $codigo   = trim($input['codigo'] ?? '');
+
+            if (empty($whatsapp) || empty($codigo)) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "El WhatsApp y el código OTP son obligatorios."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo = Database::conectar();
+            self::asegurarTablaOtp($pdo);
+
+            $stmt = $pdo->prepare("SELECT id, expira_en FROM gm_otp_codes WHERE whatsapp = :wa AND codigo = :cod ORDER BY id DESC LIMIT 1");
+            $stmt->execute([':wa' => $whatsapp, ':cod' => $codigo]);
+            $regOtp = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$regOtp || strtotime($regOtp['expira_en']) < time()) {
+                http_response_code(401);
+                echo json_encode(["status" => "error", "mensaje" => "El código de confirmación es incorrecto o ha expirado."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo->prepare("DELETE FROM gm_otp_codes WHERE whatsapp = :wa")->execute([':wa' => $whatsapp]);
+
+            // Calcular edad si se envió fecha_nacimiento
+            $fNac = trim($input['fecha_nacimiento'] ?? '');
+            $edad = (int)($input['edad'] ?? 0);
+            if (!empty($fNac)) {
+                $nac = new \DateTime($fNac);
+                $edad = (new \DateTime())->diff($nac)->y;
+            }
+
+            // Generar un user_id correlativo único para la tabla extendida
+            $maxUid = (int)$pdo->query("SELECT COALESCE(MAX(user_id), 1000) FROM gm_usuarios_extendidos")->fetchColumn();
+            $nuevoUserId = $maxUid + 1;
+
+            $sql = "INSERT INTO gm_usuarios_extendidos 
+                    (user_id, tipo_identificacion, cedula, whatsapp, nombre, segundo_nombre, apellido, segundo_apellido, edad, sexo, fecha_nacimiento, email, rol_medico) 
+                    VALUES 
+                    (:uid, :tipo_id, :ced, :wa, :nom, :snom, :ape, :sape, :edad, :sexo, :fnac, :email, 'gm_paciente')";
+
+            $pdo->prepare($sql)->execute([
+                ':uid'     => $nuevoUserId,
+                ':tipo_id' => trim($input['tipo_identificacion'] ?? 'V'),
+                ':ced'     => trim($input['cedula'] ?? ''),
+                ':wa'      => $whatsapp,
+                ':nom'     => trim($input['nombre'] ?? ''),
+                ':snom'    => !empty($input['segundo_nombre']) ? trim($input['segundo_nombre']) : null,
+                ':ape'     => trim($input['apellido'] ?? ''),
+                ':sape'    => !empty($input['segundo_apellido']) ? trim($input['segundo_apellido']) : null,
+                ':edad'    => $edad,
+                ':sexo'    => trim($input['sexo'] ?? 'Femenino'),
+                ':fnac'    => !empty($fNac) ? $fNac : null,
+                ':email'   => trim($input['email'] ?? '')
+            ]);
+
+            $nuevoId = $pdo->lastInsertId();
+            $userStmt = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE id = :id LIMIT 1");
+            $userStmt->execute([':id' => $nuevoId]);
+            $usuario = $userStmt->fetch(PDO::FETCH_ASSOC);
+
+            http_response_code(201);
+            echo json_encode([
+                "status"  => "success",
+                "mensaje" => "¡Registro completado exitosamente!",
+                "token"   => bin2hex(random_bytes(32)),
                 "usuario" => $usuario
             ], JSON_UNESCAPED_UNICODE);
 

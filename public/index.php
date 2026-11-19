@@ -70,6 +70,12 @@ if ($uri === '/' || $uri === '/api') {
 } elseif ($uri === '/api/auth/verificar-otp' && $method === 'POST') {
     AuthController::verificarOtp($input);
 
+} elseif ($uri === '/api/auth/registro-enviar-otp' && $method === 'POST') {
+    AuthController::registroEnviarOtp($input);
+
+} elseif ($uri === '/api/auth/registro-completar' && $method === 'POST') {
+    AuthController::registroCompletar($input);
+
 } elseif ($uri === '/api/catalogos' && $method === 'GET') {
     CatalogoController::obtenerTodos();
 
