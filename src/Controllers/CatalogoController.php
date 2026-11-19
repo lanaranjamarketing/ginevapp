@@ -33,4 +33,9 @@ class CatalogoController {
             echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
         }
     }
+    $stmtTasa = $pdo->query("SELECT tasa_usd, fecha FROM gm_tasa_bcv ORDER BY id DESC LIMIT 1");
+$ultimaTasa = $stmtTasa ? $stmtTasa->fetch(PDO::FETCH_ASSOC) : null;
+
+$data['tasa_bcv'] = $ultimaTasa ? $ultimaTasa['tasa_usd'] : null;
+$data['tasa_bcv_fecha'] = $ultimaTasa ? $ultimaTasa['fecha'] : null;
 }
