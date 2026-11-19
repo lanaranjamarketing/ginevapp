@@ -17,6 +17,17 @@ class AjustesMedicoController {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
     }
 
+    private static function resolverMedicoId(PDO $pdo, int$idRecibido): int {
+        if ($idRecibido <= 0) return 0;
+        $stmt =$pdo->prepare("SELECT id, user_id FROM gm_usuarios_extendidos WHERE user_id = ? OR id = ? LIMIT 1");
+        $stmt->execute([$idRecibido,$idRecibido]);
+        $row =$stmt->fetch(PDO::FETCH_ASSOC);
+        if ($row && !empty($row['user_id'])) {
+            return intval($row['user_id']);
+        }
+        return $idRecibido;
+    }
+
     private static function obtenerMeta(PDO $pdo, int$medicoId): array {
         $stmt =$pdo->prepare("SELECT meta_key, meta_value FROM gm_medico_meta WHERE medico_id = ?");
         $stmt->execute([$medicoId]);$metas = [];
@@ -37,8 +48,8 @@ class AjustesMedicoController {
      */
     public static function obtenerTodo() {
         try {
-            $medicoId = isset($_GET['medico_id']) ? intval($_GET['medico_id']) : 0;
-            if ($medicoId <= 0) {
+            $idParam = isset($_GET['medico_id']) ? intval($_GET['medico_id']) : 0;
+            if ($idParam <= 0) {
                 http_response_code(400);
                 echo json_encode(["status" => "error", "mensaje" => "ID de médico inválido"], JSON_UNESCAPED_UNICODE);
                 return;
@@ -47,21 +58,25 @@ class AjustesMedicoController {
             $pdo = Database::conectar();
             self::asegurarTablasAuxiliares($pdo);
 
-            // 1. Perfil base desde gm_usuarios_extendidos
             $stmtPerf =$pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE user_id = ? OR id = ? LIMIT 1");
-            $stmtPerf->execute([$medicoId,$medicoId]);
-            $perfilBase =$stmtPerf->fetch(PDO::FETCH_ASSOC) ?: [];
-            $realMedicoId = !empty($perfilBase['user_id']) ? intval($perfilBase['user_id']) :$medicoId;
+            $stmtPerf->execute([$idParam, $idParam]);$perfilBase = $stmtPerf->fetch(PDO::FETCH_ASSOC) ?: [];$realMedicoId = self::resolverMedicoId($pdo,$idParam);
 
-            // 2. Catálogo de especialidades desde gm_especialidades
             $stmtEsp =$pdo->query("SELECT id, nombre, slug FROM gm_especialidades ORDER BY nombre ASC");
             $especialidades = $stmtEsp ? $stmtEsp->fetchAll(PDO::FETCH_ASSOC) : [];
 
-            // 3. Metadatos de los 5 bloques
             $metas = self::obtenerMeta($pdo,$realMedicoId);
 
-            $redes = json_decode($metas['redes_sociales'] ?? '{}', true);
-            if (!is_array($redes))$redes = [];
+            // Redes sociales dinámicas (array de {red, usuario})
+            $redesRaw = json_decode($metas['redes_sociales_lista'] ?? '[]', true);$redesLista = [];
+            if (is_array($redesRaw)) {
+                foreach ($redesRaw as$r) {
+                    if (is_array($r) && !empty($r['red'])) {$redesLista[] = [
+                            'red'     => $r['red'],
+                            'usuario' => $r['usuario'] ?? ''
+                        ];
+                    }
+                }
+            }
 
             $sedesRaw = json_decode($metas['sedes_multiples'] ?? '[]', true);$sedes = [];
             if (is_array($sedesRaw)) {
@@ -80,45 +95,32 @@ class AjustesMedicoController {
             }
 
             $perfilCompleto = array_merge($perfilBase, [
-                // Bloque 1: Perfil Público y Presencia Digital
-                'avatar_url'      => $metas['avatar_url'] ?? '',
-                'tagline'         => $metas['tagline'] ?? '',
-                'bio'             => $metas['bio'] ?? '',
-                'instagram'       => $redes['instagram'] ?? '',
-                'linkedin'        => $redes['linkedin'] ?? '',
-                'x_twitter'       => $redes['x_twitter'] ?? '',
-                'web'             => $redes['web'] ?? '',
-
-                // Bloque 2: Datos Personales
-                'segundo_nombre'  => $metas['segundo_nombre'] ?? '',
-                'segundo_apellido'=> $metas['segundo_apellido'] ?? '',
-
-                // Bloque 3: Datos Profesionales
-                'ocupacion'       => $metas['ocupacion'] ?? ($perfilBase['ocupacion'] ?? 'Médico Cirujano'),
-                'universidad'     => $metas['universidad'] ?? '',
-                'especialidad'    => $metas['especialidad'] ?? ($perfilBase['especialidad'] ?? ''),
-                'mpps'            => $metas['mpps'] ?? '',
-                'cmm'             => $metas['cmm'] ?? '',
-
-                // Bloque 4: Datos Fiscales
-                'rif_tipo'        => $metas['rif_tipo'] ?? 'V',
-                'rif_num'         => $metas['rif_num'] ?? '',
-                'pais_fiscal'     => $metas['pais_fiscal'] ?? 'Venezuela',
-                'estado_fiscal'   => $metas['estado_fiscal'] ?? '',
-                'direccion_fiscal'=> $metas['direccion_fiscal'] ?? ($perfilBase['direccion_detalle'] ?? ''),
-
-                // Bloque 5: Sedes de Atención
-                'sedes'           => $sedes
+                'user_id'          => $realMedicoId,
+                'avatar_url'       => $metas['avatar_url'] ?? '',
+                'tagline'          => $metas['tagline'] ?? '',
+                'bio'              => $metas['bio'] ?? '',
+                'redes_sociales'   => $redesLista,
+                'segundo_nombre'   => $metas['segundo_nombre'] ?? '',
+                'segundo_apellido' => $metas['segundo_apellido'] ?? '',
+                'ocupacion'        => $metas['ocupacion'] ?? ($perfilBase['ocupacion'] ?? 'Médico Cirujano'),
+                'universidad'      => $metas['universidad'] ?? '',
+                'especialidad'     => $metas['especialidad'] ?? ($perfilBase['especialidad'] ?? ''),
+                'mpps'             => $metas['mpps'] ?? '',
+                'cmm'              => $metas['cmm'] ?? '',
+                'rif_tipo'         => $metas['rif_tipo'] ?? 'V',
+                'rif_num'          => $metas['rif_num'] ?? '',
+                'pais_fiscal'      => $metas['pais_fiscal'] ?? 'Venezuela',
+                'estado_fiscal'    => $metas['estado_fiscal'] ?? '',
+                'direccion_fiscal' => $metas['direccion_fiscal'] ?? ($perfilBase['direccion_detalle'] ?? ''),
+                'sedes'            => $sedes
             ]);
 
-            // 4. Calendarios del médico
             $stmtCal =$pdo->prepare("SELECT * FROM gm_calendarios WHERE medico_id = ? ORDER BY id DESC");
             $stmtCal->execute([$realMedicoId]);$calendariosRaw = $stmtCal->fetchAll(PDO::FETCH_ASSOC);$calendarios = [];
             foreach ($calendariosRaw as $cal) {$cal['dias_config'] = !empty($cal['dias_config']) ? json_decode($cal['dias_config'], true) : [];
                 $calendarios[] =$cal;
             }
 
-            // 5. Equipo de Asistentes
             $stmtAsis =$pdo->prepare("
                 SELECT u.* FROM gm_usuarios_extendidos u
                 INNER JOIN gm_medico_meta m ON m.meta_key = CONCAT('asistente_', u.user_id) AND m.medico_id = ?
@@ -150,10 +152,10 @@ class AjustesMedicoController {
     public static function guardarPerfil() {
         try {
             $input = json_decode(file_get_contents('php://input'), true) ?: [];
-            $medicoId = intval($input['medico_id'] ?? 0);
-            $seccion  = trim($input['seccion'] ?? 'todo');
+            $idParam = intval($input['medico_id'] ?? 0);
+            $seccion = trim($input['seccion'] ?? 'todo');
 
-            if ($medicoId <= 0) {
+            if ($idParam <= 0) {
                 http_response_code(400);
                 echo json_encode(["status" => "error", "mensaje" => "ID de médico requerido"], JSON_UNESCAPED_UNICODE);
                 return;
@@ -161,19 +163,26 @@ class AjustesMedicoController {
 
             $pdo = Database::conectar();
             self::asegurarTablasAuxiliares($pdo);
+            $medicoId = self::resolverMedicoId($pdo, $idParam);
 
             switch ($seccion) {
                 case 'publico':
                     self::guardarMeta($pdo, $medicoId, 'avatar_url', trim($input['avatar_url'] ?? ''));
                     self::guardarMeta($pdo, $medicoId, 'tagline', trim($input['tagline'] ?? ''));
                     self::guardarMeta($pdo, $medicoId, 'bio', trim($input['bio'] ?? ''));
-                    $redes = [
-                        'instagram' => trim($input['instagram'] ?? ''),
-                        'linkedin'  => trim($input['linkedin'] ?? ''),
-                        'x_twitter' => trim($input['x_twitter'] ?? ''),
-                        'web'       => trim($input['web'] ?? ''),
-                    ];
-                    self::guardarMeta($pdo, $medicoId, 'redes_sociales', json_encode($redes, JSON_UNESCAPED_UNICODE));
+
+                    $redesLimpias = [];
+                    if (isset($input['redes_sociales']) && is_array($input['redes_sociales'])) {
+                        foreach ($input['redes_sociales'] as $r) {
+                            if (is_array($r) && trim($r['usuario'] ?? '') !== '') {
+                                $redesLimpias[] = [
+                                    'red'     => trim($r['red'] ?? 'Instagram'),
+                                    'usuario' => trim($r['usuario'] ?? ''),
+                                ];
+                            }
+                        }
+                    }
+                    self::guardarMeta($pdo, $medicoId, 'redes_sociales_lista', json_encode($redesLimpias, JSON_UNESCAPED_UNICODE));
                     $msg = "Perfil público y presencia digital actualizados.";
                     break;
 
@@ -188,7 +197,7 @@ class AjustesMedicoController {
                         SET nombre = ?, apellido = ?, sexo = ?, fecha_nacimiento = ?
                         WHERE user_id = ? OR id = ?
                     ");
-                    $stmt->execute([$nombre, $apellido, $sexo, !empty($fnac) ? $fnac : null, $medicoId, $medicoId]);
+                    $stmt->execute([$nombre, $apellido, $sexo, !empty($fnac) ? $fnac : null, $medicoId, $idParam]);
 
                     self::guardarMeta($pdo, $medicoId, 'segundo_nombre', trim($input['segundo_nombre'] ?? ''));
                     self::guardarMeta($pdo, $medicoId, 'segundo_apellido', trim($input['segundo_apellido'] ?? ''));
@@ -245,16 +254,13 @@ class AjustesMedicoController {
         }
     }
 
-    /**
-     * POST /api/medico/calendarios (Crear o Editar calendario)
-     */
     public static function guardarCalendario() {
         try {
             $input = json_decode(file_get_contents('php://input'), true) ?: [];
-            $medicoId = intval($input['medico_id'] ?? 0);
-            $calId    = intval($input['id'] ?? 0);
+            $idParam = intval($input['medico_id'] ?? 0);
+            $calId   = intval($input['id'] ?? 0);
 
-            if ($medicoId <= 0) {
+            if ($idParam <= 0) {
                 http_response_code(400);
                 echo json_encode(["status" => "error", "mensaje" => "ID de médico requerido"], JSON_UNESCAPED_UNICODE);
                 return;
@@ -262,6 +268,7 @@ class AjustesMedicoController {
 
             $pdo = Database::conectar();
             self::asegurarTablasAuxiliares($pdo);
+            $medicoId = self::resolverMedicoId($pdo, $idParam);
 
             $metas = self::obtenerMeta($pdo, $medicoId);
             $rifNum = trim($metas['rif_num'] ?? '');
@@ -325,21 +332,19 @@ class AjustesMedicoController {
         }
     }
 
-    /**
-     * DELETE /api/medico/calendarios?id=X&medico_id=Y
-     */
     public static function eliminarCalendario() {
         try {
-            $id       = intval($_GET['id'] ?? 0);
-            $medicoId = intval($_GET['medico_id'] ?? 0);
+            $id      = intval($_GET['id'] ?? 0);
+            $idParam = intval($_GET['medico_id'] ?? 0);
 
-            if ($id <= 0 || $medicoId <= 0) {
+            if ($id <= 0 || $idParam <= 0) {
                 http_response_code(400);
                 echo json_encode(["status" => "error", "mensaje" => "Parámetros inválidos"], JSON_UNESCAPED_UNICODE);
                 return;
             }
 
             $pdo = Database::conectar();
+            $medicoId = self::resolverMedicoId($pdo, $idParam);
             $stmt = $pdo->prepare("DELETE FROM gm_calendarios WHERE id = ? AND medico_id = ?");
             $stmt->execute([$id, $medicoId]);
 
@@ -350,20 +355,17 @@ class AjustesMedicoController {
         }
     }
 
-    /**
-     * POST /api/medico/asistentes
-     */
     public static function crearAsistente() {
         try {
             $input = json_decode(file_get_contents('php://input'), true) ?: [];
-            $medicoId = intval($input['medico_id'] ?? 0);
+            $idParam  = intval($input['medico_id'] ?? 0);
             $nombre   = trim($input['nombre'] ?? '');
             $apellido = trim($input['apellido'] ?? '');
             $cedula   = trim($input['cedula'] ?? '');
             $whatsapp = trim($input['whatsapp'] ?? '');
             $email    = trim($input['email'] ?? '');
 
-            if ($medicoId <= 0 || $nombre === '' || $cedula === '' || $whatsapp === '') {
+            if ($idParam <= 0 || $nombre === '' || $cedula === '' || $whatsapp === '') {
                 http_response_code(400);
                 echo json_encode(["status" => "error", "mensaje" => "Complete todos los campos obligatorios del asistente."], JSON_UNESCAPED_UNICODE);
                 return;
@@ -371,6 +373,7 @@ class AjustesMedicoController {
 
             $pdo = Database::conectar();
             self::asegurarTablasAuxiliares($pdo);
+            $medicoId = self::resolverMedicoId($pdo, $idParam);
 
             $stmtCheck = $pdo->prepare("SELECT id, user_id FROM gm_usuarios_extendidos WHERE cedula = ? OR whatsapp = ? LIMIT 1");
             $stmtCheck->execute([$cedula, $whatsapp]);
@@ -403,21 +406,19 @@ class AjustesMedicoController {
         }
     }
 
-    /**
-     * DELETE /api/medico/asistentes?user_id=X&medico_id=Y
-     */
     public static function eliminarAsistente() {
         try {
             $asisUserId = intval($_GET['user_id'] ?? 0);
-            $medicoId   = intval($_GET['medico_id'] ?? 0);
+            $idParam    = intval($_GET['medico_id'] ?? 0);
 
-            if ($asisUserId <= 0 || $medicoId <= 0) {
+            if ($asisUserId <= 0 || $idParam <= 0) {
                 http_response_code(400);
                 echo json_encode(["status" => "error", "mensaje" => "Parámetros inválidos"], JSON_UNESCAPED_UNICODE);
                 return;
             }
 
             $pdo = Database::conectar();
+            $medicoId = self::resolverMedicoId($pdo, $idParam);
             $stmtMeta = $pdo->prepare("DELETE FROM gm_medico_meta WHERE medico_id = ? AND meta_key = ?");
             $stmtMeta->execute([$medicoId, 'asistente_' . $asisUserId]);
 
