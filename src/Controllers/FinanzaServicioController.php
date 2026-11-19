@@ -7,12 +7,21 @@ use Exception;
 
 class FinanzaServicioController {
 
+    private static function asegurarColumnaEstado(PDO $pdo) {
+        try {
+            $pdo->exec("ALTER TABLE gm_servicios ADD COLUMN IF NOT EXISTS estado VARCHAR(20) DEFAULT 'activo'");
+        } catch (Exception $e) {
+            // Ignorar si ya existe en motores sin IF NOT EXISTS
+        }
+    }
+
     /**
      * GET /api/servicios?medico_id=X
      */
     public static function listarServicios() {
         try {
             $pdo = Database::conectar();
+            self::asegurarColumnaEstado($pdo);
             $medicoId = isset($_GET['medico_id']) ? (int)$_GET['medico_id'] : 0;
 
             if ($medicoId > 0) {
@@ -25,6 +34,7 @@ class FinanzaServicioController {
             $servicios = $stmt->fetchAll(PDO::FETCH_ASSOC);
             foreach ($servicios as &$s) {
                 $s['items_combo'] = !empty($s['items_combo']) ? json_decode($s['items_combo'], true) : [];
+                $s['estado'] = !empty($s['estado']) ? $s['estado'] : 'activo';
             }
 
             echo json_encode([
@@ -41,10 +51,15 @@ class FinanzaServicioController {
 
     /**
      * POST /api/servicios
-     * Crea un servicio individual o un combo de servicios
+     * Crea o actualiza un servicio individual o combo (si viene 'id' > 0, actualiza)
      */
-    public static function crearServicio($input) {
+    public static function crearServicio($input = null) {
         try {
+            if ($input === null) {
+                $input = json_decode(file_get_contents('php://input'), true) ?: [];
+            }
+
+            $servId   = (int)($input['id'] ?? 0);
             $medicoId = (int)($input['medico_id'] ?? 0);
             $nombre   = trim($input['nombre_servicio'] ?? '');
             $precio   = (float)($input['precio'] ?? 0);
@@ -56,26 +71,123 @@ class FinanzaServicioController {
             }
 
             $pdo = Database::conectar();
-            $tipo = trim($input['tipo'] ?? 'servicio');
-            $itemsCombo = !empty($input['items_combo']) ? (is_string($input['items_combo']) ? $input['items_combo'] : json_encode($input['items_combo'], JSON_UNESCAPED_UNICODE)) : null;
+            self::asegurarColumnaEstado($pdo);
 
-            $sql = "INSERT INTO gm_servicios (medico_id, nombre_servicio, descripcion, precio, tipo, items_combo) 
-                    VALUES (:med, :nombre, :desc, :precio, :tipo, :items)";
-            $stmt = $pdo->prepare($sql);
+            $tipo = trim($input['tipo'] ?? 'servicio');
+            $itemsCombo = null;
+            if ($tipo === 'combo' && !empty($input['items_combo'])) {
+                $itemsCombo = is_string($input['items_combo'])
+                    ? $input['items_combo']
+                    : json_encode(array_map('intval', $input['items_combo']), JSON_UNESCAPED_UNICODE);
+            }
+
+            if ($servId > 0) {
+                $sql = "UPDATE gm_servicios
+                        SET tipo = :tipo, nombre_servicio = :nombre, descripcion = :desc, precio = :precio, items_combo = :items
+                        WHERE id = :id AND medico_id = :med";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([
+                    ':tipo'   => $tipo,
+                    ':nombre' => $nombre,
+                    ':desc'   => $input['descripcion'] ?? '',
+                    ':precio' => $precio,
+                    ':items'  => $itemsCombo,
+                    ':id'     => $servId,
+                    ':med'    => $medicoId
+                ]);
+
+                echo json_encode([
+                    "status"  => "success",
+                    "mensaje" => "Servicio o combo actualizado correctamente.",
+                    "id"      => $servId
+                ], JSON_UNESCAPED_UNICODE);
+            } else {
+                $sql = "INSERT INTO gm_servicios (medico_id, nombre_servicio, descripcion, precio, tipo, items_combo, estado) 
+                        VALUES (:med, :nombre, :desc, :precio, :tipo, :items, 'activo')";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([
+                    ':med'    => $medicoId,
+                    ':nombre' => $nombre,
+                    ':desc'   => $input['descripcion'] ?? '',
+                    ':precio' => $precio,
+                    ':tipo'   => $tipo,
+                    ':items'  => $itemsCombo
+                ]);
+
+                http_response_code(201);
+                echo json_encode([
+                    "status"  => "success",
+                    "mensaje" => "Servicio o combo registrado correctamente.",
+                    "id"      => $pdo->lastInsertId()
+                ], JSON_UNESCAPED_UNICODE);
+            }
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * POST /api/servicios/estado
+     */
+    public static function cambiarEstadoServicio($input = null) {
+        try {
+            if ($input === null) {
+                $input = json_decode(file_get_contents('php://input'), true) ?: [];
+            }
+            $servId   = (int)($input['id'] ?? 0);
+            $medicoId = (int)($input['medico_id'] ?? 0);
+            $estado   = trim($input['estado'] ?? 'activo');
+
+            if ($servId <= 0 || $medicoId <= 0) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "Parámetros inválidos."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo = Database::conectar();
+            self::asegurarColumnaEstado($pdo);
+
+            $stmt = $pdo->prepare("UPDATE gm_servicios SET estado = :estado WHERE id = :id AND medico_id = :med");
             $stmt->execute([
-                ':med'    => $medicoId,
-                ':nombre' => $nombre,
-                ':desc'   => $input['descripcion'] ?? null,
-                ':precio' => $precio,
-                ':tipo'   => $tipo,
-                ':items'  => $itemsCombo
+                ':estado' => ($estado === 'inactivo') ? 'inactivo' : 'activo',
+                ':id'     => $servId,
+                ':med'    => $medicoId
             ]);
 
-            http_response_code(201);
             echo json_encode([
                 "status"  => "success",
-                "mensaje" => "Servicio registrado correctamente.",
-                "id"      => $pdo->lastInsertId()
+                "mensaje" => "Estatus actualizado."
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * DELETE /api/servicios?id=X&medico_id=Y
+     */
+    public static function eliminarServicio() {
+        try {
+            $servId   = (int)($_GET['id'] ?? 0);
+            $medicoId = (int)($_GET['medico_id'] ?? 0);
+
+            if ($servId <= 0 || $medicoId <= 0) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "Parámetros inválidos para eliminar."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo = Database::conectar();
+            $stmt = $pdo->prepare("DELETE FROM gm_servicios WHERE id = :id AND medico_id = :med");
+            $stmt->execute([':id' => $servId, ':med' => $medicoId]);
+
+            echo json_encode([
+                "status"  => "success",
+                "mensaje" => "Registro eliminado correctamente."
             ], JSON_UNESCAPED_UNICODE);
 
         } catch (Exception $e) {
@@ -86,7 +198,6 @@ class FinanzaServicioController {
 
     /**
      * GET /api/tasa-bcv
-     * Obtiene la tasa BCV vigente más reciente
      */
     public static function obtenerTasaBcv() {
         try {
@@ -107,10 +218,12 @@ class FinanzaServicioController {
 
     /**
      * POST /api/tasa-bcv
-     * Registra o actualiza manualmente la tasa BCV del día
      */
-    public static function guardarTasaBcv($input) {
+    public static function guardarTasaBcv($input = null) {
         try {
+            if ($input === null) {
+                $input = json_decode(file_get_contents('php://input'), true) ?: [];
+            }
             $tasaUsd = (float)($input['tasa_usd'] ?? 0);
             if ($tasaUsd <= 0) {
                 http_response_code(400);
@@ -142,7 +255,6 @@ class FinanzaServicioController {
 
     /**
      * GET /api/finanzas?medico_id=X&paciente_id=Y
-     * Lista los movimientos financieros (Debe / Haber / Saldo en USD y Bs) y totales
      */
     public static function listarFinanzas() {
         try {
@@ -200,10 +312,12 @@ class FinanzaServicioController {
 
     /**
      * POST /api/finanzas
-     * Registra un pago/abono (haber) o un cargo adicional (debe) con cálculo automático en Bs
      */
-    public static function registrarMovimiento($input) {
+    public static function registrarMovimiento($input = null) {
         try {
+            if ($input === null) {
+                $input = json_decode(file_get_contents('php://input'), true) ?: [];
+            }
             $medicoId   = (int)($input['medico_id'] ?? 0);
             $pacienteId = (int)($input['paciente_id'] ?? 0);
             $concepto   = trim($input['concepto'] ?? '');
@@ -257,15 +371,14 @@ class FinanzaServicioController {
             echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
         }
     }
+
     /**
      * GET /api/tasa-bcv/sincronizar
-     * Extrae la tasa oficial del BCV (con respaldo API) y guarda el registro horario
      */
     public static function sincronizarTasaBcv() {
         try {
             $tasaUsd = 0.0;
 
-            // 1. Intentar extracción directa desde bcv.org.ve
             $ch = curl_init('https://www.bcv.org.ve/');
             curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
             curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
@@ -286,7 +399,6 @@ class FinanzaServicioController {
                 $tasaUsd = (float)$raw;
             }
 
-            // 2. Respaldo automático si bcv.org.ve bloquea la petición
             if ($tasaUsd <= 0) {
                 $chApi = curl_init('https://ve.dolarapi.com/v1/dolares/oficial');
                 curl_setopt($chApi, CURLOPT_RETURNTRANSFER, true);

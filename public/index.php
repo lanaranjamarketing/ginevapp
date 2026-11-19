@@ -170,6 +170,15 @@ if ($uri === '/' || $uri === '/api') {
 
 } elseif ($uri === '/api/tasa-bcv/sincronizar' && $method === 'GET') {
     FinanzaServicioController::sincronizarTasaBcv();
+
+} elseif ($uri === '/api/servicios' && $method === 'GET') {
+    FinanzaServicioController::listarServicios();
+} elseif ($uri === '/api/servicios' && $method === 'POST') {
+    FinanzaServicioController::crearServicio($input);
+} elseif ($uri === '/api/servicios/estado' && $method === 'POST') {
+    FinanzaServicioController::cambiarEstadoServicio($input);
+} elseif ($uri === '/api/servicios' && $method === 'DELETE') {
+    FinanzaServicioController::eliminarServicio();
     
 } elseif ($uri === '/api/medico/avatar' && $method === 'POST') {
     AjustesMedicoController::subirAvatar();
