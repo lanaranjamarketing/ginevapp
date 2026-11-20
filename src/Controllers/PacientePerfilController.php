@@ -8,7 +8,11 @@ class PacientePerfilController
 {
     public static function obtenerPerfil(): void
     {
+        if (ob_get_length()) {
+            ob_clean();
+        }
         header('Content-Type: application/json; charset=utf-8');
+
         $pacienteId = isset($_GET['paciente_id'])
             ? (int)$_GET['paciente_id']
             : (isset($_GET['user_id']) ? (int)$_GET['user_id'] : 0);
@@ -134,6 +138,10 @@ class PacientePerfilController
                 'direccion_detalle' => $direccionDetalle,
             ];
 
+            if (!empty($avatarUrl) && in_array('avatar_url', $columnasTabla, true)) {
+                $candidatos['avatar_url'] = $avatarUrl;
+            }
+
             $camposFiltrados = [];
             foreach ($candidatos as $col => $val) {
                 if (in_array($col, $columnasTabla, true)) {
@@ -219,6 +227,7 @@ class PacientePerfilController
 
     public static function subirAvatar(): void
     {
+        @ini_set('display_errors', '0');
         if (ob_get_length()) {
             ob_clean();
         }
@@ -235,15 +244,19 @@ class PacientePerfilController
         }
 
         if (!isset($_FILES['avatar']) || $_FILES['avatar']['error'] !== UPLOAD_ERR_OK) {
+            $errCode = $_FILES['avatar']['error'] ?? -1;
             http_response_code(400);
-            echo json_encode(['status' => 'error', 'mensaje' => 'No se recibió una imagen válida'], JSON_UNESCAPED_UNICODE);
+            echo json_encode([
+                'status'  => 'error',
+                'mensaje' => "No se recibió una imagen válida (código $errCode)",
+            ], JSON_UNESCAPED_UNICODE);
             return;
         }
 
         $tmpName = $_FILES['avatar']['tmp_name'];
         $info = @getimagesize($tmpName);
         if ($info === false) {
-            http_response_code(400);
+            http_response_code(415);
             echo json_encode(['status' => 'error', 'mensaje' => 'El archivo no es una imagen válida'], JSON_UNESCAPED_UNICODE);
             return;
         }
@@ -257,9 +270,12 @@ class PacientePerfilController
         $ext = $extMap[$mime] ?? 'jpg';
 
         $dirDestino = self::directorioAvatar();
-        if (!is_dir($dirDestino) && !mkdir($dirDestino, 0775, true) && !is_dir($dirDestino)) {
+        if (!is_dir($dirDestino) && !@mkdir($dirDestino, 0777, true) && !is_dir($dirDestino)) {
             http_response_code(500);
-            echo json_encode(['status' => 'error', 'mensaje' => 'No se pudo crear la carpeta pacientes/avatar'], JSON_UNESCAPED_UNICODE);
+            echo json_encode([
+                'status'  => 'error',
+                'mensaje' => "No se pudo crear la carpeta $dirDestino",
+            ], JSON_UNESCAPED_UNICODE);
             return;
         }
 
@@ -270,13 +286,32 @@ class PacientePerfilController
         $nombreArchivo = 'paciente_' . $pacienteId . '_' . time() . '.' . $ext;
         $rutaCompleta = $dirDestino . '/' . $nombreArchivo;
 
-        if (!move_uploaded_file($tmpName, $rutaCompleta)) {
+        if (!@move_uploaded_file($tmpName, $rutaCompleta)) {
             http_response_code(500);
-            echo json_encode(['status' => 'error', 'mensaje' => 'No se pudo guardar la imagen en pacientes/avatar'], JSON_UNESCAPED_UNICODE);
+            echo json_encode([
+                'status'  => 'error',
+                'mensaje' => "No se pudo guardar la imagen en $dirDestino",
+            ], JSON_UNESCAPED_UNICODE);
             return;
         }
 
         $avatarUrl = self::construirUrlAvatar($nombreArchivo);
+
+        // Persistir avatar_url en gm_usuarios_extendidos si existe la columna (o crearla si no existe)
+        try {
+            $db = Database::conectar();
+            $columnas = self::obtenerColumnasTabla($db, 'gm_usuarios_extendidos');
+            if (!in_array('avatar_url', $columnas, true)) {
+                $db->exec("ALTER TABLE `gm_usuarios_extendidos` ADD COLUMN `avatar_url` VARCHAR(500) NULL");
+            }
+            $stmtUpd = $db->prepare("UPDATE `gm_usuarios_extendidos` SET `avatar_url` = :avatar_url WHERE `user_id` = :user_id");
+            $stmtUpd->execute([
+                ':avatar_url' => $avatarUrl,
+                ':user_id'    => $pacienteId,
+            ]);
+        } catch (\Throwable $e) {
+            // Si no se puede actualizar en BD, igual devolvemos la URL del archivo guardado en disco
+        }
 
         echo json_encode([
             'status'     => 'success',
@@ -292,6 +327,7 @@ class PacientePerfilController
         $file = basename((string)($_GET['file'] ?? ''));
         if ($file === '' || !preg_match('/^paciente_[0-9]+_[0-9]+\.(jpg|jpeg|png|webp)$/i', $file)) {
             http_response_code(400);
+            header('Content-Type: text/plain; charset=utf-8');
             echo 'Archivo no válido';
             return;
         }
@@ -299,6 +335,7 @@ class PacientePerfilController
         $ruta = self::directorioAvatar() . '/' . $file;
         if (!is_file($ruta)) {
             http_response_code(404);
+            header('Content-Type: text/plain; charset=utf-8');
             echo 'Imagen no encontrada';
             return;
         }
@@ -313,6 +350,7 @@ class PacientePerfilController
 
         header('Access-Control-Allow-Origin: *');
         header('Content-Type: ' . ($contentTypes[$ext] ?? 'image/jpeg'));
+        header('Cache-Control: no-cache, must-revalidate');
         header('Content-Length: ' . filesize($ruta));
         readfile($ruta);
     }
@@ -336,8 +374,7 @@ class PacientePerfilController
 
     private static function construirUrlAvatar(string $nombreArchivo): string
     {
-        $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
         $host = $_SERVER['HTTP_HOST'] ?? 'api.ginevapp.com';
-        return $scheme . '://' . $host . '/api/paciente/avatar/ver?file=' . rawurlencode($nombreArchivo);
+        return 'https://' . $host . '/api/paciente/avatar/ver?file=' . rawurlencode($nombreArchivo);
     }
 }
