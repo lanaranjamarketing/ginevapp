@@ -13,7 +13,7 @@ class CitaController {
     public static function listar() {
         try {
             $pdo = Database::conectar();
-            $condiciones = ["c.estado_cita != 'cancelada'"];
+            $condiciones = ["c.estado_cita COLLATE utf8mb4_unicode_ci != 'cancelada' COLLATE utf8mb4_unicode_ci"];
             $params = [];
 
             if (!empty($_GET['incluir_canceladas']) && $_GET['incluir_canceladas'] === '1') {
@@ -49,7 +49,7 @@ class CitaController {
                     FROM gm_citas c
                     LEFT JOIN gm_usuarios_extendidos p ON c.paciente_id = p.user_id
                     LEFT JOIN gm_usuarios_extendidos m ON c.medico_id = m.user_id
-                    LEFT JOIN gm_estatus_cita ec ON c.estado_cita = ec.slug
+                    LEFT JOIN gm_estatus_cita ec ON c.estado_cita COLLATE utf8mb4_unicode_ci = ec.slug COLLATE utf8mb4_unicode_ci
                     WHERE $whereSql
                     ORDER BY c.fecha_cita ASC, c.hora_cita ASC";
 
@@ -99,7 +99,7 @@ class CitaController {
 
             $horaNormalizada = strlen($input['hora_cita']) === 5 ? $input['hora_cita'] . ':00' : $input['hora_cita'];
 
-            $ocupStmt = $pdo->prepare("SELECT COUNT(*) FROM gm_citas WHERE medico_id = :med AND fecha_cita = :fecha AND hora_cita = :hora AND estado_cita != 'cancelada'");
+            $ocupStmt = $pdo->prepare("SELECT COUNT(*) FROM gm_citas WHERE medico_id = :med AND fecha_cita = :fecha AND hora_cita = :hora AND estado_cita COLLATE utf8mb4_unicode_ci != 'cancelada' COLLATE utf8mb4_unicode_ci");
             $ocupStmt->execute([
                 ':med'   => (int)$input['medico_id'],
                 ':fecha' => $input['fecha_cita'],
@@ -199,7 +199,8 @@ class CitaController {
             echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
         }
     }
-/**
+
+    /**
      * POST /api/citas/check-in-qr
      * Se ejecuta cuando el paciente escanea el QR del médico en la clínica
      * Recibe: { "medico_id": 1, "paciente_id": 5 }
@@ -219,7 +220,7 @@ class CitaController {
             $hoy = date('Y-m-d');
 
             // Buscar cita del paciente para HOY con ese médico
-            $stmt = $pdo->prepare("SELECT * FROM gm_citas WHERE medico_id = :med AND paciente_id = :pac AND fecha_cita = :hoy AND estado_cita IN ('reservada', 'confirmada', 'en_espera') ORDER BY hora_cita ASC LIMIT 1");
+            $stmt = $pdo->prepare("SELECT * FROM gm_citas WHERE medico_id = :med AND paciente_id = :pac AND fecha_cita = :hoy AND estado_cita COLLATE utf8mb4_unicode_ci IN ('reservada', 'confirmada', 'en_espera') ORDER BY hora_cita ASC LIMIT 1");
             $stmt->execute([':med' => $medicoId, ':pac' => $pacienteId, ':hoy' => $hoy]);
             $cita = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -243,7 +244,7 @@ class CitaController {
             }
 
             // Calcular pacientes por delante y tiempo estimado de espera
-            $delanteStmt = $pdo->prepare("SELECT COUNT(*) FROM gm_citas WHERE medico_id = :med AND fecha_cita = :hoy AND estado_cita = 'en_espera' AND numero_llegada < :turno");
+            $delanteStmt = $pdo->prepare("SELECT COUNT(*) FROM gm_citas WHERE medico_id = :med AND fecha_cita = :hoy AND estado_cita COLLATE utf8mb4_unicode_ci = 'en_espera' AND numero_llegada < :turno");
             $delanteStmt->execute([':med' => $medicoId, ':hoy' => $hoy, ':turno' => $turnoAsignado]);
             $pacientesDelante = (int)$delanteStmt->fetchColumn();
 
