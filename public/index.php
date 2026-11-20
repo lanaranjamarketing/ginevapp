@@ -13,6 +13,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 require_once __DIR__ . '/../src/Config/Database.php';
 require_once __DIR__ . '/../src/Controllers/CatalogoController.php';
 require_once __DIR__ . '/../src/Controllers/PacienteController.php';
+require_once __DIR__ . '/../src/Controllers/PacientePerfilController.php';
 require_once __DIR__ . '/../src/Controllers/AuthController.php';
 require_once __DIR__ . '/../src/Controllers/CalendarioController.php';
 require_once __DIR__ . '/../src/Controllers/CitaController.php';
@@ -22,6 +23,7 @@ require_once __DIR__ . '/../src/Controllers/AjustesMedicoController.php';
 
 use App\Controllers\CatalogoController;
 use App\Controllers\PacienteController;
+use App\Controllers\PacientePerfilController;
 use App\Controllers\AuthController;
 use App\Controllers\CalendarioController;
 use App\Controllers\CitaController;
@@ -29,10 +31,13 @@ use App\Controllers\HistoriaController;
 use App\Controllers\FinanzaServicioController;
 use App\Controllers\AjustesMedicoController;
 
-$uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+$rawUri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?: '/';
+$uri = ($rawUri !== '/' && substr($rawUri, -1) === '/') ? rtrim($rawUri, '/') : $rawUri;
 $method = $_SERVER['REQUEST_METHOD'];
 
-$input = json_decode(file_get_contents('php://input'), true) ?? $_POST;
+$rawBody = file_get_contents('php://input');
+$decodedBody = json_decode($rawBody, true);
+$input = is_array($decodedBody) ? $decodedBody : $_POST;
 
 // Enrutador principal
 if ($uri === '/' || $uri === '/api') {
@@ -42,9 +47,16 @@ if ($uri === '/' || $uri === '/api') {
         "endpoints_disponibles" => [
             "POST /api/auth/enviar-otp",
             "POST /api/auth/verificar-otp",
+            "POST /api/auth/registro-enviar-otp",
+            "POST /api/auth/registro-completar",
             "GET /api/catalogos",
+            "GET /api/configuracion/tema",
             "GET /api/pacientes",
             "POST /api/pacientes",
+            "GET /api/paciente/perfil",
+            "POST /api/paciente/perfil",
+            "POST /api/paciente/avatar",
+            "GET /api/paciente/avatar/ver",
             "GET /api/calendarios",
             "POST /api/calendarios",
             "GET /api/calendarios/disponibilidad",
@@ -59,8 +71,11 @@ if ($uri === '/' || $uri === '/api') {
             "PUT /api/examenes",
             "GET /api/servicios",
             "POST /api/servicios",
+            "POST /api/servicios/estado",
+            "DELETE /api/servicios",
             "GET /api/tasa-bcv",
             "POST /api/tasa-bcv",
+            "GET /api/tasa-bcv/sincronizar",
             "GET /api/finanzas",
             "POST /api/finanzas",
             "GET /api/medico/ajustes",
@@ -68,7 +83,9 @@ if ($uri === '/' || $uri === '/api') {
             "POST /api/medico/calendarios",
             "DELETE /api/medico/calendarios",
             "POST /api/medico/asistentes",
-            "DELETE /api/medico/asistentes"
+            "DELETE /api/medico/asistentes",
+            "POST /api/medico/avatar",
+            "GET /api/medico/avatar/ver"
         ]
     ], JSON_UNESCAPED_UNICODE);
 
@@ -87,11 +104,34 @@ if ($uri === '/' || $uri === '/api') {
 } elseif ($uri === '/api/catalogos' && $method === 'GET') {
     CatalogoController::obtenerTodos();
 
+} elseif ($uri === '/api/configuracion/tema' && $method === 'GET') {
+    AuthController::obtenerTema();
+
 } elseif ($uri === '/api/pacientes' && $method === 'GET') {
-    PacienteController::listar();
+    if (method_exists(PacienteController::class, 'listarPacientes')) {
+        PacienteController::listarPacientes();
+    } else {
+        PacienteController::listar();
+    }
 
 } elseif ($uri === '/api/pacientes' && $method === 'POST') {
-    PacienteController::crear($input);
+    if (method_exists(PacienteController::class, 'crearPaciente')) {
+        PacienteController::crearPaciente($input);
+    } else {
+        PacienteController::crear($input);
+    }
+
+} elseif ($uri === '/api/paciente/perfil' && $method === 'GET') {
+    PacientePerfilController::obtenerPerfil();
+
+} elseif ($uri === '/api/paciente/perfil' && $method === 'POST') {
+    PacientePerfilController::guardarPerfil($input);
+
+} elseif ($uri === '/api/paciente/avatar' && $method === 'POST') {
+    PacientePerfilController::subirAvatar();
+
+} elseif ($uri === '/api/paciente/avatar/ver' && $method === 'GET') {
+    PacientePerfilController::verAvatar();
 
 } elseif ($uri === '/api/calendarios' && $method === 'GET') {
     CalendarioController::listar();
@@ -135,20 +175,26 @@ if ($uri === '/' || $uri === '/api') {
 } elseif ($uri === '/api/servicios' && $method === 'POST') {
     FinanzaServicioController::crearServicio($input);
 
+} elseif ($uri === '/api/servicios/estado' && $method === 'POST') {
+    FinanzaServicioController::cambiarEstadoServicio($input);
+
+} elseif ($uri === '/api/servicios' && $method === 'DELETE') {
+    FinanzaServicioController::eliminarServicio();
+
 } elseif ($uri === '/api/tasa-bcv' && $method === 'GET') {
     FinanzaServicioController::obtenerTasaBcv();
 
 } elseif ($uri === '/api/tasa-bcv' && $method === 'POST') {
     FinanzaServicioController::guardarTasaBcv($input);
 
+} elseif ($uri === '/api/tasa-bcv/sincronizar' && $method === 'GET') {
+    FinanzaServicioController::sincronizarTasaBcv();
+
 } elseif ($uri === '/api/finanzas' && $method === 'GET') {
     FinanzaServicioController::listarFinanzas();
 
 } elseif ($uri === '/api/finanzas' && $method === 'POST') {
     FinanzaServicioController::registrarMovimiento($input);
-
-} elseif ($uri === '/api/configuracion/tema' && $method === 'GET') {
-    AuthController::obtenerTema();
 
 } elseif ($uri === '/api/medico/ajustes' && $method === 'GET') {
     AjustesMedicoController::obtenerTodo();
@@ -168,34 +214,10 @@ if ($uri === '/' || $uri === '/api') {
 } elseif ($uri === '/api/medico/asistentes' && $method === 'DELETE') {
     AjustesMedicoController::eliminarAsistente();
 
-} elseif ($uri === '/api/tasa-bcv/sincronizar' && $method === 'GET') {
-    FinanzaServicioController::sincronizarTasaBcv();
-
-} elseif ($uri === '/api/paciente/perfil' && $method === 'GET') {
-    PacientePerfilController::obtenerPerfil();
-} elseif ($uri === '/api/paciente/perfil' && $method === 'POST') {
-    PacientePerfilController::guardarPerfil($input);
-} elseif ($uri === '/api/paciente/avatar' && $method === 'POST') {
-    PacientePerfilController::subirAvatar();
-} elseif ($uri === '/api/paciente/avatar/ver' && $method === 'GET') {
-    PacientePerfilController::verAvatar();
-
-} elseif ($uri === '/api/servicios' && $method === 'GET') {
-    FinanzaServicioController::listarServicios();
-} elseif ($uri === '/api/servicios' && $method === 'POST') {
-    FinanzaServicioController::crearServicio($input);
-} elseif ($uri === '/api/servicios/estado' && $method === 'POST') {
-    FinanzaServicioController::cambiarEstadoServicio($input);
-} elseif ($uri === '/api/servicios' && $method === 'DELETE') {
-    FinanzaServicioController::eliminarServicio();
-} elseif ($uri === '/api/pacientes' && $method === 'GET') {
-    PacienteController::listarPacientes();
-} elseif ($uri === '/api/pacientes' && $method === 'POST') {
-    PacienteController::crearPaciente($input);    
 } elseif ($uri === '/api/medico/avatar' && $method === 'POST') {
     AjustesMedicoController::subirAvatar();
 
-    } elseif ($uri === '/api/medico/avatar/ver' && $method === 'GET') {
+} elseif ($uri === '/api/medico/avatar/ver' && $method === 'GET') {
     $archivo = basename($_GET['file'] ?? '');
     $ruta = __DIR__ . '/uploads/avatars/' . $archivo;
     if ($archivo !== '' && file_exists($ruta)) {
