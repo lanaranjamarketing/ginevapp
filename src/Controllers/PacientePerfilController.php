@@ -297,7 +297,6 @@ class PacientePerfilController
 
         $avatarUrl = self::construirUrlAvatar($nombreArchivo);
 
-        // Persistir avatar_url en gm_usuarios_extendidos si existe la columna (o crearla si no existe)
         try {
             $db = Database::conectar();
             $columnas = self::obtenerColumnasTabla($db, 'gm_usuarios_extendidos');
@@ -310,7 +309,6 @@ class PacientePerfilController
                 ':user_id'    => $pacienteId,
             ]);
         } catch (\Throwable $e) {
-            // Si no se puede actualizar en BD, igual devolvemos la URL del archivo guardado en disco
         }
 
         echo json_encode([
@@ -324,20 +322,27 @@ class PacientePerfilController
 
     public static function verAvatar(): void
     {
+        @ini_set('display_errors', '0');
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+
         $file = basename((string)($_GET['file'] ?? ''));
         if ($file === '' || !preg_match('/^paciente_[0-9]+_[0-9]+\.(jpg|jpeg|png|webp)$/i', $file)) {
             http_response_code(400);
+            header('Access-Control-Allow-Origin: *');
             header('Content-Type: text/plain; charset=utf-8');
             echo 'Archivo no válido';
-            return;
+            exit;
         }
 
         $ruta = self::directorioAvatar() . '/' . $file;
         if (!is_file($ruta)) {
             http_response_code(404);
+            header('Access-Control-Allow-Origin: *');
             header('Content-Type: text/plain; charset=utf-8');
             echo 'Imagen no encontrada';
-            return;
+            exit;
         }
 
         $ext = strtolower(pathinfo($ruta, PATHINFO_EXTENSION));
@@ -349,10 +354,12 @@ class PacientePerfilController
         ];
 
         header('Access-Control-Allow-Origin: *');
+        header('Access-Control-Allow-Methods: GET, OPTIONS');
         header('Content-Type: ' . ($contentTypes[$ext] ?? 'image/jpeg'));
-        header('Cache-Control: no-cache, must-revalidate');
+        header('Cache-Control: public, max-age=3600');
         header('Content-Length: ' . filesize($ruta));
         readfile($ruta);
+        exit;
     }
 
     private static function obtenerColumnasTabla(PDO $db, string $tabla): array
