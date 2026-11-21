@@ -211,6 +211,9 @@ if ($uri === '/' || $uri === '/api') {
 
 } elseif ($uri === '/api/servicios' && $method === 'GET') {
     FinanzaServicioController::listarServicios();
+  
+} elseif ($uri === '/api/historias/pdf' && $method === 'GET') {
+    HistoriaController::imprimirPdf();
 
 } elseif ($uri === '/api/servicios' && $method === 'POST') {
     FinanzaServicioController::crearServicio($input);
