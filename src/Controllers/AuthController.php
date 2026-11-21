@@ -30,7 +30,6 @@ class AuthController {
             UNIQUE KEY `clave_idx` (`clave`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
 
-        // Sembrar credenciales iniciales de Evolution API si aún no existen en BD
         $stmtCheck = $pdo->query("SELECT COUNT(*) FROM `gm_configuracion` WHERE `clave` = 'evolution_url'");
         if ((int)$stmtCheck->fetchColumn() === 0) {
             $ins = $pdo->prepare("INSERT IGNORE INTO `gm_configuracion` (`clave`, `valor`, `descripcion`) VALUES (:c, :v, :d)");
@@ -38,7 +37,14 @@ class AuthController {
                 ['evolution_url', 'https://auto-evolution-api.tidwyf.easypanel.host', 'Server URL (Evolution API)'],
                 ['evolution_instance', 'la naranja', 'Instancia de Evolution API'],
                 ['evolution_apikey', '429683C4C977415CAAFCCE10F7D57E11', 'API Key de Evolution API'],
-                ['whatsapp_plantilla_otp', 'Su código de acceso es: {codigo}', 'Plantilla del Mensaje OTP']
+                ['whatsapp_plantilla_otp', 'Su código de acceso es: {codigo}', 'Plantilla del Mensaje OTP'],
+                ['theme_primary', '#C2186B', 'Color Primario'],
+                ['theme_primary_dark', '#4A0E2E', 'Color Oscuro'],
+                ['theme_secondary', '#F45D5D', 'Color Secundario'],
+                ['theme_background', '#FDF6F8', 'Color de Fondo'],
+                ['theme_surface', '#FFFFFF', 'Color de Tarjetas'],
+                ['theme_text_primary', '#2D1422', 'Color de Texto Principal'],
+                ['theme_text_secondary', '#7A5C6B', 'Color de Texto Secundario']
             ];
             foreach ($defaults as $row) {
                 $ins->execute([':c' => $row[0], ':v' => $row[1], ':d' => $row[2]]);
@@ -60,7 +66,29 @@ class AuthController {
     }
 
     /**
-     * Enviar mensaje de texto mediante Evolution API leyendo los parámetros desde MySQL
+     * GET /api/configuracion/tema
+     */
+    public static function obtenerTema() {
+        try {
+            $pdo = Database::conectar();
+            self::asegurarTablas($pdo);
+            $stmt = $pdo->query("SELECT `clave`, `valor` FROM `gm_configuracion` WHERE `clave` LIKE 'theme_%'");
+            $tema = [];
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $tema[$row['clave']] = $row['valor'];
+            }
+            echo json_encode([
+                "status" => "success",
+                "data"   => $tema
+            ], JSON_UNESCAPED_UNICODE);
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * Enviar mensaje de texto mediante Evolution API
      */
     private static function enviarWhatsApp($pdo, $whatsapp, $mensaje) {
         $config = self::obtenerConfigEvolution($pdo);
@@ -77,7 +105,6 @@ class AuthController {
             throw new Exception("Los parámetros de Evolution API no están configurados en la base de datos.");
         }
 
-        // rawurlencode asegura que instancias con espacios (ej: "la naranja") funcionen correctamente
         $endpoint = rtrim($serverUrl, '/') . '/message/sendText/' . rawurlencode($instance);
 
         $payload = json_encode([
