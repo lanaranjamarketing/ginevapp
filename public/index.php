@@ -17,7 +17,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-// Convertir cualquier excepción o error fatal no capturado en una respuesta JSON válida
 set_exception_handler(function ($e) {
     if (ob_get_length()) {
         ob_clean();
@@ -25,7 +24,7 @@ set_exception_handler(function ($e) {
     http_response_code(500);
     echo json_encode([
         "status"  => "error",
-        "mensaje" => "Error interno del servidor: " . $e->getMessage()
+        "mensaje" => "Error en " . basename($e->getFile()) . " línea " . $e->getLine() . ": " . $e->getMessage()
     ], JSON_UNESCAPED_UNICODE);
     exit;
 });
@@ -39,7 +38,7 @@ register_shutdown_function(function () {
         http_response_code(500);
         echo json_encode([
             "status"  => "error",
-            "mensaje" => "Error crítico PHP: " . $error['message'] . " en línea " . $error['line']
+            "mensaje" => "Error en " . basename($error['file']) . " línea " . $error['line'] . ": " . $error['message']
         ], JSON_UNESCAPED_UNICODE);
         exit;
     }
@@ -74,7 +73,6 @@ $rawBody = file_get_contents('php://input');
 $decodedBody = json_decode($rawBody, true);
 $input = is_array($decodedBody) ? $decodedBody : $_POST;
 
-// Enrutador principal
 if ($uri === '/' || $uri === '/api') {
     echo json_encode([
         "status" => "success",
