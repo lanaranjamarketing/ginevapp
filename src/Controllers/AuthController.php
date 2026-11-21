@@ -7,9 +7,6 @@ use Exception;
 
 class AuthController {
 
-    /**
-     * Asegura que existan las tablas temporales y de configuración en MySQL
-     */
     private static function asegurarTablas($pdo) {
         $pdo->exec("CREATE TABLE IF NOT EXISTS `gm_otp_codes` (
             `id` int(11) NOT NULL AUTO_INCREMENT,
@@ -32,7 +29,7 @@ class AuthController {
 
         $stmtCheck = $pdo->query("SELECT COUNT(*) FROM `gm_configuracion` WHERE `clave` = 'evolution_url'");
         if ((int)$stmtCheck->fetchColumn() === 0) {
-            $ins = $pdo->prepare("INSERT IGNORE INTO `gm_configuracion` (`clave`, `valor`, `descripcion`) VALUES (:c, :v, :d)");
+            $ins = $pdo->prepare("INSERT IGNORE INTO `gm_configuracion` (`clave`, `valor`, `descripcion`) VALUES (?, ?, ?)");
             $defaults = [
                 ['evolution_url', 'https://auto-evolution-api.tidwyf.easypanel.host', 'Server URL (Evolution API)'],
                 ['evolution_instance', 'la naranja', 'Instancia de Evolution API'],
@@ -47,14 +44,11 @@ class AuthController {
                 ['theme_text_secondary', '#7A5C6B', 'Color de Texto Secundario']
             ];
             foreach ($defaults as $row) {
-                $ins->execute([':c' => $row[0], ':v' => $row[1], ':d' => $row[2]]);
+                $ins->execute([$row[0], $row[1], $row[2]]);
             }
         }
     }
 
-    /**
-     * Obtiene la configuración activa de Evolution API desde la base de datos
-     */
     private static function obtenerConfigEvolution($pdo) {
         self::asegurarTablas($pdo);
         $stmt = $pdo->query("SELECT `clave`, `valor` FROM `gm_configuracion` WHERE `clave` IN ('evolution_url', 'evolution_instance', 'evolution_apikey', 'whatsapp_plantilla_otp')");
@@ -65,9 +59,6 @@ class AuthController {
         return $config;
     }
 
-    /**
-     * GET /api/configuracion/tema
-     */
     public static function obtenerTema() {
         try {
             $pdo = Database::conectar();
@@ -87,9 +78,6 @@ class AuthController {
         }
     }
 
-    /**
-     * Enviar mensaje de texto mediante Evolution API
-     */
     private static function enviarWhatsApp($pdo, $whatsapp, $mensaje) {
         $config = self::obtenerConfigEvolution($pdo);
 
@@ -156,14 +144,16 @@ class AuthController {
                 return;
             }
 
+            $soloDigitos = preg_replace('/[^0-9]/', '', $identificador);
+
             $pdo = Database::conectar();
             $config = self::obtenerConfigEvolution($pdo);
 
-            // Parámetros únicos (:wa y :ced) requeridos cuando ATTR_EMULATE_PREPARES => false
-            $stmt = $pdo->prepare("SELECT id, user_id, nombre, apellido, whatsapp, rol_medico FROM gm_usuarios_extendidos WHERE whatsapp = :wa OR cedula = :ced LIMIT 1");
+            $stmt = $pdo->prepare("SELECT id, user_id, nombre, apellido, whatsapp, rol_medico FROM gm_usuarios_extendidos WHERE whatsapp = ? OR whatsapp = ? OR cedula = ? LIMIT 1");
             $stmt->execute([
-                ':wa'  => $identificador,
-                ':ced' => $identificador
+                $identificador,
+                $soloDigitos !== '' ? $soloDigitos : $identificador,
+                $identificador
             ]);
             $usuario = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -173,17 +163,13 @@ class AuthController {
                 return;
             }
 
-            $whatsappDestino = $usuario['whatsapp'];
+            $whatsappDestino = preg_replace('/[^0-9]/', '', (string)$usuario['whatsapp']);
             $codigoOtp = str_pad((string)random_int(100000, 999999), 6, '0', STR_PAD_LEFT);
             $expiraEn  = date('Y-m-d H:i:s', strtotime('+5 minutes'));
 
-            $pdo->prepare("DELETE FROM gm_otp_codes WHERE whatsapp = :wa")->execute([':wa' => $whatsappDestino]);
-            $ins = $pdo->prepare("INSERT INTO gm_otp_codes (whatsapp, codigo, expira_en) VALUES (:wa, :cod, :exp)");
-            $ins->execute([
-                ':wa'  => $whatsappDestino,
-                ':cod' => $codigoOtp,
-                ':exp' => $expiraEn
-            ]);
+            $pdo->prepare("DELETE FROM gm_otp_codes WHERE whatsapp = ?")->execute([$whatsappDestino]);
+            $ins = $pdo->prepare("INSERT INTO gm_otp_codes (whatsapp, codigo, expira_en) VALUES (?, ?, ?)");
+            $ins->execute([$whatsappDestino, $codigoOtp, $expiraEn]);
 
             $plantilla = $config['whatsapp_plantilla_otp'] ?? 'Su código de acceso es: {codigo}';
             $mensaje   = str_replace('{codigo}', $codigoOtp, $plantilla);
@@ -211,7 +197,7 @@ class AuthController {
      */
     public static function verificarOtp($input) {
         try {
-            $whatsapp = trim((string)($input['whatsapp'] ?? ''));
+            $whatsapp = preg_replace('/[^0-9]/', '', trim((string)($input['whatsapp'] ?? '')));
             $codigo   = trim((string)($input['codigo'] ?? ''));
 
             if ($whatsapp === '' || $codigo === '') {
@@ -223,11 +209,8 @@ class AuthController {
             $pdo = Database::conectar();
             self::asegurarTablas($pdo);
 
-            $stmt = $pdo->prepare("SELECT id, expira_en FROM gm_otp_codes WHERE whatsapp = :wa AND codigo = :cod ORDER BY id DESC LIMIT 1");
-            $stmt->execute([
-                ':wa'  => $whatsapp,
-                ':cod' => $codigo
-            ]);
+            $stmt = $pdo->prepare("SELECT id, expira_en FROM gm_otp_codes WHERE whatsapp = ? AND codigo = ? ORDER BY id DESC LIMIT 1");
+            $stmt->execute([$whatsapp, $codigo]);
             $registroOtp = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if (!$registroOtp) {
@@ -237,16 +220,16 @@ class AuthController {
             }
 
             if (strtotime($registroOtp['expira_en']) < time()) {
-                $pdo->prepare("DELETE FROM gm_otp_codes WHERE id = :id")->execute([':id' => $registroOtp['id']]);
+                $pdo->prepare("DELETE FROM gm_otp_codes WHERE id = ?")->execute([(int)$registroOtp['id']]);
                 http_response_code(401);
                 echo json_encode(["status" => "error", "mensaje" => "El código ha expirado. Solicite uno nuevo."], JSON_UNESCAPED_UNICODE);
                 return;
             }
 
-            $pdo->prepare("DELETE FROM gm_otp_codes WHERE whatsapp = :wa")->execute([':wa' => $whatsapp]);
+            $pdo->prepare("DELETE FROM gm_otp_codes WHERE whatsapp = ?")->execute([$whatsapp]);
 
-            $userStmt = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE whatsapp = :wa LIMIT 1");
-            $userStmt->execute([':wa' => $whatsapp]);
+            $userStmt = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE REPLACE(whatsapp, '+', '') = ? LIMIT 1");
+            $userStmt->execute([$whatsapp]);
             $usuario = $userStmt->fetch(PDO::FETCH_ASSOC);
 
             if (!$usuario) {
@@ -287,8 +270,8 @@ class AuthController {
             $pdo = Database::conectar();
             $config = self::obtenerConfigEvolution($pdo);
 
-            $check = $pdo->prepare("SELECT id FROM gm_usuarios_extendidos WHERE cedula = :ced OR whatsapp = :wa LIMIT 1");
-            $check->execute([':ced' => $cedula, ':wa' => $whatsapp]);
+            $check = $pdo->prepare("SELECT id FROM gm_usuarios_extendidos WHERE cedula = ? OR REPLACE(whatsapp, '+', '') = ? LIMIT 1");
+            $check->execute([$cedula, $whatsapp]);
             if ($check->fetch()) {
                 http_response_code(409);
                 echo json_encode(["status" => "error", "mensaje" => "El número de identificación o el WhatsApp ya se encuentran registrados en el sistema."], JSON_UNESCAPED_UNICODE);
@@ -298,9 +281,9 @@ class AuthController {
             $codigoOtp = str_pad((string)random_int(100000, 999999), 6, '0', STR_PAD_LEFT);
             $expiraEn  = date('Y-m-d H:i:s', strtotime('+5 minutes'));
 
-            $pdo->prepare("DELETE FROM gm_otp_codes WHERE whatsapp = :wa")->execute([':wa' => $whatsapp]);
-            $ins = $pdo->prepare("INSERT INTO gm_otp_codes (whatsapp, codigo, expira_en) VALUES (:wa, :cod, :exp)");
-            $ins->execute([':wa' => $whatsapp, ':cod' => $codigoOtp, ':exp' => $expiraEn]);
+            $pdo->prepare("DELETE FROM gm_otp_codes WHERE whatsapp = ?")->execute([$whatsapp]);
+            $ins = $pdo->prepare("INSERT INTO gm_otp_codes (whatsapp, codigo, expira_en) VALUES (?, ?, ?)");
+            $ins->execute([$whatsapp, $codigoOtp, $expiraEn]);
 
             $plantilla = $config['whatsapp_plantilla_otp'] ?? 'Su código de acceso es: {codigo}';
             $mensaje   = str_replace('{codigo}', $codigoOtp, $plantilla);
@@ -336,8 +319,8 @@ class AuthController {
             $pdo = Database::conectar();
             self::asegurarTablas($pdo);
 
-            $stmt = $pdo->prepare("SELECT id, expira_en FROM gm_otp_codes WHERE whatsapp = :wa AND codigo = :cod ORDER BY id DESC LIMIT 1");
-            $stmt->execute([':wa' => $whatsapp, ':cod' => $codigo]);
+            $stmt = $pdo->prepare("SELECT id, expira_en FROM gm_otp_codes WHERE whatsapp = ? AND codigo = ? ORDER BY id DESC LIMIT 1");
+            $stmt->execute([$whatsapp, $codigo]);
             $regOtp = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if (!$regOtp || strtotime($regOtp['expira_en']) < time()) {
@@ -346,7 +329,7 @@ class AuthController {
                 return;
             }
 
-            $pdo->prepare("DELETE FROM gm_otp_codes WHERE whatsapp = :wa")->execute([':wa' => $whatsapp]);
+            $pdo->prepare("DELETE FROM gm_otp_codes WHERE whatsapp = ?")->execute([$whatsapp]);
 
             $fNac = trim((string)($input['fecha_nacimiento'] ?? ''));
             $edad = (int)($input['edad'] ?? 0);
@@ -361,26 +344,26 @@ class AuthController {
             $sql = "INSERT INTO gm_usuarios_extendidos 
                     (user_id, tipo_identificacion, cedula, whatsapp, nombre, segundo_nombre, apellido, segundo_apellido, edad, sexo, fecha_nacimiento, email, rol_medico) 
                     VALUES 
-                    (:uid, :tipo_id, :ced, :wa, :nom, :snom, :ape, :sape, :edad, :sexo, :fnac, :email, 'gm_paciente')";
+                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'gm_paciente')";
 
             $pdo->prepare($sql)->execute([
-                ':uid'     => $nuevoUserId,
-                ':tipo_id' => trim((string)($input['tipo_identificacion'] ?? 'V')),
-                ':ced'     => trim((string)($input['cedula'] ?? '')),
-                ':wa'      => $whatsapp,
-                ':nom'     => trim((string)($input['nombre'] ?? '')),
-                ':snom'    => !empty($input['segundo_nombre']) ? trim((string)$input['segundo_nombre']) : null,
-                ':ape'     => trim((string)($input['apellido'] ?? '')),
-                ':sape'    => !empty($input['segundo_apellido']) ? trim((string)$input['segundo_apellido']) : null,
-                ':edad'    => $edad,
-                ':sexo'    => trim((string)($input['sexo'] ?? 'Femenino')),
-                ':fnac'    => $fNac !== '' ? $fNac : null,
-                ':email'   => trim((string)($input['email'] ?? ''))
+                $nuevoUserId,
+                trim((string)($input['tipo_identificacion'] ?? 'V')),
+                trim((string)($input['cedula'] ?? '')),
+                $whatsapp,
+                trim((string)($input['nombre'] ?? '')),
+                !empty($input['segundo_nombre']) ? trim((string)$input['segundo_nombre']) : null,
+                trim((string)($input['apellido'] ?? '')),
+                !empty($input['segundo_apellido']) ? trim((string)$input['segundo_apellido']) : null,
+                $edad,
+                trim((string)($input['sexo'] ?? 'Femenino')),
+                $fNac !== '' ? $fNac : null,
+                trim((string)($input['email'] ?? ''))
             ]);
 
             $nuevoId = $pdo->lastInsertId();
-            $userStmt = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE id = :id LIMIT 1");
-            $userStmt->execute([':id' => $nuevoId]);
+            $userStmt = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE id = ? LIMIT 1");
+            $userStmt->execute([(int)$nuevoId]);
             $usuario = $userStmt->fetch(PDO::FETCH_ASSOC);
 
             http_response_code(201);
