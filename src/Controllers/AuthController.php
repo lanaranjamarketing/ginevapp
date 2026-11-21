@@ -63,16 +63,21 @@ class AuthController {
      * Enviar mensaje de texto mediante Evolution API leyendo los parámetros desde MySQL
      */
     private static function enviarWhatsApp($pdo, $whatsapp, $mensaje) {
-        $config    = self::obtenerConfigEvolution($pdo);
-        $serverUrl = trim($config['evolution_url'] ?? getenv('EVOLUTION_URL') ?: '');
-        $instance  = trim($config['evolution_instance'] ?? getenv('EVOLUTION_INSTANCE') ?: '');
-        $apiKey    = trim($config['evolution_apikey'] ?? getenv('EVOLUTION_APIKEY') ?: '');
+        $config = self::obtenerConfigEvolution($pdo);
 
-        if (empty($serverUrl) || empty($instance) || empty($apiKey)) {
+        $envUrl      = getenv('EVOLUTION_URL') ?: '';
+        $envInstance = getenv('EVOLUTION_INSTANCE') ?: '';
+        $envApiKey   = getenv('EVOLUTION_APIKEY') ?: '';
+
+        $serverUrl = trim((string)($config['evolution_url'] ?? $envUrl));
+        $instance  = trim((string)($config['evolution_instance'] ?? $envInstance));
+        $apiKey    = trim((string)($config['evolution_apikey'] ?? $envApiKey));
+
+        if ($serverUrl === '' || $instance === '' || $apiKey === '') {
             throw new Exception("Los parámetros de Evolution API no están configurados en la base de datos.");
         }
 
-        // rawurlencode asegura que instancias con espacios (ej: "la naranja") funcionen correctamente en la URL
+        // rawurlencode asegura que instancias con espacios (ej: "la naranja") funcionen correctamente
         $endpoint = rtrim($serverUrl, '/') . '/message/sendText/' . rawurlencode($instance);
 
         $payload = json_encode([
@@ -116,9 +121,9 @@ class AuthController {
      */
     public static function enviarOtp($input) {
         try {
-            $identificador = trim($input['identificador'] ?? $input['whatsapp'] ?? '');
+            $identificador = trim((string)($input['identificador'] ?? $input['whatsapp'] ?? ''));
 
-            if (empty($identificador)) {
+            if ($identificador === '') {
                 http_response_code(400);
                 echo json_encode(["status" => "error", "mensaje" => "Debe ingresar su número de WhatsApp o cédula."], JSON_UNESCAPED_UNICODE);
                 return;
@@ -127,11 +132,8 @@ class AuthController {
             $pdo = Database::conectar();
             $config = self::obtenerConfigEvolution($pdo);
 
-            $stmt = $pdo->prepare("SELECT id, user_id, nombre, apellido, whatsapp, rol_medico FROM gm_usuarios_extendidos WHERE whatsapp = :wa OR cedula = :ced LIMIT 1");
-            $stmt->execute([
-                ':wa'  => $identificador,
-                ':ced' => $identificador
-            ]);
+            $stmt = $pdo->prepare("SELECT id, user_id, nombre, apellido, whatsapp, rol_medico FROM gm_usuarios_extendidos WHERE whatsapp = :id OR cedula = :id LIMIT 1");
+            $stmt->execute([':id' => $identificador]);
             $usuario = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if (!$usuario) {
@@ -178,10 +180,10 @@ class AuthController {
      */
     public static function verificarOtp($input) {
         try {
-            $whatsapp = trim($input['whatsapp'] ?? '');
-            $codigo   = trim($input['codigo'] ?? '');
+            $whatsapp = trim((string)($input['whatsapp'] ?? ''));
+            $codigo   = trim((string)($input['codigo'] ?? ''));
 
-            if (empty($whatsapp) || empty($codigo)) {
+            if ($whatsapp === '' || $codigo === '') {
                 http_response_code(400);
                 echo json_encode(["status" => "error", "mensaje" => "El número de WhatsApp y el código OTP son obligatorios."], JSON_UNESCAPED_UNICODE);
                 return;
@@ -242,10 +244,10 @@ class AuthController {
      */
     public static function registroEnviarOtp($input) {
         try {
-            $cedula   = trim($input['cedula'] ?? '');
-            $whatsapp = preg_replace('/[^0-9]/', '', trim($input['whatsapp'] ?? ''));
+            $cedula   = trim((string)($input['cedula'] ?? ''));
+            $whatsapp = preg_replace('/[^0-9]/', '', trim((string)($input['whatsapp'] ?? '')));
 
-            if (empty($cedula) || empty($whatsapp)) {
+            if ($cedula === '' || $whatsapp === '') {
                 http_response_code(400);
                 echo json_encode(["status" => "error", "mensaje" => "El número de identificación y el WhatsApp son obligatorios."], JSON_UNESCAPED_UNICODE);
                 return;
@@ -291,10 +293,10 @@ class AuthController {
      */
     public static function registroCompletar($input) {
         try {
-            $whatsapp = preg_replace('/[^0-9]/', '', trim($input['whatsapp'] ?? ''));
-            $codigo   = trim($input['codigo'] ?? '');
+            $whatsapp = preg_replace('/[^0-9]/', '', trim((string)($input['whatsapp'] ?? '')));
+            $codigo   = trim((string)($input['codigo'] ?? ''));
 
-            if (empty($whatsapp) || empty($codigo)) {
+            if ($whatsapp === '' || $codigo === '') {
                 http_response_code(400);
                 echo json_encode(["status" => "error", "mensaje" => "El WhatsApp y el código OTP son obligatorios."], JSON_UNESCAPED_UNICODE);
                 return;
@@ -315,9 +317,9 @@ class AuthController {
 
             $pdo->prepare("DELETE FROM gm_otp_codes WHERE whatsapp = :wa")->execute([':wa' => $whatsapp]);
 
-            $fNac = trim($input['fecha_nacimiento'] ?? '');
+            $fNac = trim((string)($input['fecha_nacimiento'] ?? ''));
             $edad = (int)($input['edad'] ?? 0);
-            if (!empty($fNac)) {
+            if ($fNac !== '') {
                 $nac = new \DateTime($fNac);
                 $edad = (new \DateTime())->diff($nac)->y;
             }
@@ -332,17 +334,17 @@ class AuthController {
 
             $pdo->prepare($sql)->execute([
                 ':uid'     => $nuevoUserId,
-                ':tipo_id' => trim($input['tipo_identificacion'] ?? 'V'),
-                ':ced'     => trim($input['cedula'] ?? ''),
+                ':tipo_id' => trim((string)($input['tipo_identificacion'] ?? 'V')),
+                ':ced'     => trim((string)($input['cedula'] ?? '')),
                 ':wa'      => $whatsapp,
-                ':nom'     => trim($input['nombre'] ?? ''),
-                ':snom'    => !empty($input['segundo_nombre']) ? trim($input['segundo_nombre']) : null,
-                ':ape'     => trim($input['apellido'] ?? ''),
-                ':sape'    => !empty($input['segundo_apellido']) ? trim($input['segundo_apellido']) : null,
+                ':nom'     => trim((string)($input['nombre'] ?? '')),
+                ':snom'    => !empty($input['segundo_nombre']) ? trim((string)$input['segundo_nombre']) : null,
+                ':ape'     => trim((string)($input['apellido'] ?? '')),
+                ':sape'    => !empty($input['segundo_apellido']) ? trim((string)$input['segundo_apellido']) : null,
                 ':edad'    => $edad,
-                ':sexo'    => trim($input['sexo'] ?? 'Femenino'),
-                ':fnac'    => !empty($fNac) ? $fNac : null,
-                ':email'   => trim($input['email'] ?? '')
+                ':sexo'    => trim((string)($input['sexo'] ?? 'Femenino')),
+                ':fnac'    => $fNac !== '' ? $fNac : null,
+                ':email'   => trim((string)($input['email'] ?? ''))
             ]);
 
             $nuevoId = $pdo->lastInsertId();
@@ -358,22 +360,6 @@ class AuthController {
                 "usuario" => $usuario
             ], JSON_UNESCAPED_UNICODE);
 
-        } catch (Exception $e) {
-            http_response_code(500);
-            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
-        }
-    }
-
-    public static function obtenerTema() {
-        try {
-            $pdo = Database::conectar();
-            self::asegurarTablas($pdo);
-            $stmt = $pdo->query("SELECT `clave`, `valor` FROM `gm_configuracion` WHERE `clave` LIKE 'theme_%'");
-            $tema = [];
-            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-                $tema[$row['clave']] = $row['valor'];
-            }
-            echo json_encode(["status" => "success", "tema" => $tema], JSON_UNESCAPED_UNICODE);
         } catch (Exception $e) {
             http_response_code(500);
             echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);

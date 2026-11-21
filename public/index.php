@@ -1,14 +1,49 @@
 <?php
 date_default_timezone_set('America/Caracas');
+ini_set('display_errors', '0');
+error_reporting(E_ALL);
+ob_start();
+
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
 header("Content-Type: application/json; charset=utf-8");
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    if (ob_get_length()) {
+        ob_clean();
+    }
     http_response_code(200);
     exit;
 }
+
+// Convertir cualquier excepción o error fatal no capturado en una respuesta JSON válida
+set_exception_handler(function ($e) {
+    if (ob_get_length()) {
+        ob_clean();
+    }
+    http_response_code(500);
+    echo json_encode([
+        "status"  => "error",
+        "mensaje" => "Error interno del servidor: " . $e->getMessage()
+    ], JSON_UNESCAPED_UNICODE);
+    exit;
+});
+
+register_shutdown_function(function () {
+    $error = error_get_last();
+    if ($error !== null && in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+        if (ob_get_length()) {
+            ob_clean();
+        }
+        http_response_code(500);
+        echo json_encode([
+            "status"  => "error",
+            "mensaje" => "Error crítico PHP: " . $error['message'] . " en línea " . $error['line']
+        ], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+});
 
 require_once __DIR__ . '/../src/Config/Database.php';
 require_once __DIR__ . '/../src/Controllers/CatalogoController.php';
@@ -65,7 +100,6 @@ if ($uri === '/' || $uri === '/api') {
             "PUT /api/citas",
             "POST /api/citas/check-in-qr",
             "POST /api/citas/iniciar-atencion",
-            "GET /api/marketplace/medicos",
             "GET /api/historias",
             "GET /api/historias/antecedentes",
             "POST /api/historias",
@@ -158,9 +192,6 @@ if ($uri === '/' || $uri === '/api') {
 } elseif ($uri === '/api/citas/iniciar-atencion' && $method === 'POST') {
     CitaController::iniciarAtencion($input);
 
-} elseif ($uri === '/api/marketplace/medicos' && $method === 'GET') {
-    CitaController::listarMarketplace();
-
 } elseif ($uri === '/api/historias' && $method === 'GET') {
     HistoriaController::listar();
 
@@ -222,6 +253,9 @@ if ($uri === '/' || $uri === '/api') {
     AjustesMedicoController::subirAvatar();
 
 } elseif ($uri === '/api/medico/avatar/ver' && $method === 'GET') {
+    if (ob_get_length()) {
+        ob_clean();
+    }
     $archivo = basename($_GET['file'] ?? '');
     $ruta = __DIR__ . '/uploads/avatars/' . $archivo;
     if ($archivo !== '' && file_exists($ruta)) {
