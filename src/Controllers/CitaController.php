@@ -8,6 +8,46 @@ use Exception;
 class CitaController {
 
     /**
+     * Calcula el monto total en USD cruzando la lista de servicios seleccionados
+     * (separados por coma) contra el catálogo gm_servicios del médico.
+     */
+    private static function calcularMontoServicios(PDO $pdo, int $medicoId, string $procedimiento): float {
+        $procedimiento = trim($procedimiento);
+        if ($procedimiento === '' || $medicoId <= 0) {
+            return 0.00;
+        }
+
+        $items = array_filter(array_map('trim', explode(',', $procedimiento)));
+        if (empty($items)) {
+            return 0.00;
+        }
+
+        $stmt = $pdo->prepare("
+            SELECT precio 
+            FROM gm_servicios 
+            WHERE medico_id = :med 
+              AND TRIM(LOWER(nombre_servicio)) = TRIM(LOWER(:nombre)) 
+            LIMIT 1
+        ");
+
+        $total = 0.00;
+        foreach ($items as $nombreServicio) {
+            // Si el texto trae un sufijo entre paréntesis con precio, limpiarlo para buscar el nombre exacto
+            $nombreLimpio = preg_replace('/\s*\(\$\s*[0-9.,]+\)\s*$/', '', $nombreServicio);
+            $stmt->execute([
+                ':med'    => $medicoId,
+                ':nombre' => trim($nombreLimpio)
+            ]);
+            $precio = $stmt->fetchColumn();
+            if ($precio !== false) {
+                $total += (float)$precio;
+            }
+        }
+
+        return round($total, 2);
+    }
+
+    /**
      * GET /api/citas?medico_id=X&paciente_id=Y&fecha=YYYY-MM-DD
      */
     public static function listar() {
@@ -57,6 +97,29 @@ class CitaController {
             $stmt->execute($params);
             $citas = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+            // Asegurar que cada cita devuelva su monto real (y rellenar citas antiguas que tenían 0.00)
+            $updMonto = $pdo->prepare("UPDATE gm_citas SET total_usd = :total WHERE id = :id");
+            foreach ($citas as &$cita) {
+                $montoGuardado = isset($cita['total_usd']) ? (float)$cita['total_usd'] : 0.00;
+                if ($montoGuardado <= 0 && !empty($cita['procedimiento'])) {
+                    $montoCalculado = self::calcularMontoServicios(
+                        $pdo,
+                        (int)$cita['medico_id'],
+                        (string)$cita['procedimiento']
+                    );
+                    if ($montoCalculado > 0) {
+                        $montoGuardado = $montoCalculado;
+                        $updMonto->execute([
+                            ':total' => $montoCalculado,
+                            ':id'    => (int)$cita['id']
+                        ]);
+                    }
+                }
+                $cita['total_usd'] = number_format($montoGuardado, 2, '.', '');
+                $cita['monto_usd'] = $cita['total_usd'];
+            }
+            unset($cita);
+
             echo json_encode([
                 "status" => "success",
                 "total"  => count($citas),
@@ -71,7 +134,7 @@ class CitaController {
 
     /**
      * POST /api/citas
-     * Agenda una nueva cita verificando cupos disponibles
+     * Agenda una nueva cita verificando cupos disponibles y guardando el monto total_usd
      */
     public static function crear($input) {
         try {
@@ -85,6 +148,7 @@ class CitaController {
             }
 
             $pdo = Database::conectar();
+            $medicoId = (int)$input['medico_id'];
 
             // Verificar capacidad del bloque en el calendario
             $calStmt = $pdo->prepare("SELECT cupos_por_bloque, default_status FROM gm_calendarios WHERE id = :id LIMIT 1");
@@ -101,7 +165,7 @@ class CitaController {
 
             $ocupStmt = $pdo->prepare("SELECT COUNT(*) FROM gm_citas WHERE medico_id = :med AND fecha_cita = :fecha AND hora_cita = :hora AND estado_cita COLLATE utf8mb4_unicode_ci != 'cancelada' COLLATE utf8mb4_unicode_ci");
             $ocupStmt->execute([
-                ':med'   => (int)$input['medico_id'],
+                ':med'   => $medicoId,
                 ':fecha' => $input['fecha_cita'],
                 ':hora'  => $horaNormalizada
             ]);
@@ -114,28 +178,37 @@ class CitaController {
             }
 
             $estadoInicial = $input['estado_cita'] ?? ($cal['default_status'] ?: 'reservada');
+            $procedimiento = trim($input['procedimiento'] ?? 'Consulta General');
+
+            // Calcular monto desde gm_servicios o tomar el enviado si es mayor a 0
+            $totalUsd = isset($input['total_usd']) ? (float)$input['total_usd'] : (isset($input['monto_usd']) ? (float)$input['monto_usd'] : 0.00);
+            if ($totalUsd <= 0) {
+                $totalUsd = self::calcularMontoServicios($pdo, $medicoId, $procedimiento);
+            }
 
             $sql = "INSERT INTO gm_citas 
-                    (calendario_id, paciente_id, medico_id, fecha_cita, hora_cita, procedimiento, estado_cita, tipo_cita)
+                    (calendario_id, paciente_id, medico_id, fecha_cita, hora_cita, procedimiento, total_usd, estado_cita, tipo_cita)
                     VALUES 
-                    (:cal, :pac, :med, :fecha, :hora, :proc, :estado, :tipo)";
+                    (:cal, :pac, :med, :fecha, :hora, :proc, :total, :estado, :tipo)";
             $stmt = $pdo->prepare($sql);
             $stmt->execute([
                 ':cal'    => (int)$input['calendario_id'],
                 ':pac'    => (int)$input['paciente_id'],
-                ':med'    => (int)$input['medico_id'],
+                ':med'    => $medicoId,
                 ':fecha'  => $input['fecha_cita'],
                 ':hora'   => $horaNormalizada,
-                ':proc'   => trim($input['procedimiento'] ?? 'Consulta General'),
+                ':proc'   => $procedimiento,
+                ':total'  => round($totalUsd, 2),
                 ':estado' => $estadoInicial,
                 ':tipo'   => trim($input['tipo_cita'] ?? 'Hora Programada')
             ]);
 
             http_response_code(201);
             echo json_encode([
-                "status"  => "success",
-                "mensaje" => "Cita médica agendada correctamente.",
-                "cita_id" => $pdo->lastInsertId()
+                "status"    => "success",
+                "mensaje"   => "Cita médica agendada correctamente.",
+                "cita_id"   => $pdo->lastInsertId(),
+                "total_usd" => number_format($totalUsd, 2, '.', '')
             ], JSON_UNESCAPED_UNICODE);
 
         } catch (Exception $e) {
@@ -146,7 +219,7 @@ class CitaController {
 
     /**
      * PUT /api/citas
-     * Permite cambiar estado (confirmar, cancelar) o reprogramar fecha/hora
+     * Permite cambiar estado (confirmar, cancelar), reprogramar fecha/hora o actualizar procedimiento/monto
      */
     public static function actualizar($input) {
         try {
@@ -175,8 +248,22 @@ class CitaController {
                 $params[':hora'] = $horaNorm;
             }
             if (!empty($input['procedimiento'])) {
+                $procNuevo = trim($input['procedimiento']);
                 $campos[] = "procedimiento = :proc";
-                $params[':proc'] = trim($input['procedimiento']);
+                $params[':proc'] = $procNuevo;
+
+                // Recalcular total_usd si se actualizaron los servicios
+                $medStmt = $pdo->prepare("SELECT medico_id FROM gm_citas WHERE id = :id LIMIT 1");
+                $medStmt->execute([':id' => $citaId]);
+                $medId = (int)$medStmt->fetchColumn();
+                if ($medId > 0) {
+                    $nuevoTotal = isset($input['total_usd']) ? (float)$input['total_usd'] : self::calcularMontoServicios($pdo, $medId, $procNuevo);
+                    $campos[] = "total_usd = :total";
+                    $params[':total'] = round($nuevoTotal, 2);
+                }
+            } elseif (isset($input['total_usd'])) {
+                $campos[] = "total_usd = :total";
+                $params[':total'] = round((float)$input['total_usd'], 2);
             }
 
             if (empty($campos)) {

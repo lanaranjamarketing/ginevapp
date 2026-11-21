@@ -171,6 +171,7 @@ try {
             `fecha_cita` date NOT NULL,
             `hora_cita` time NOT NULL,
             `procedimiento` varchar(200) DEFAULT 'Consulta General',
+            `total_usd` decimal(10,2) NOT NULL DEFAULT 0.00,
             `estado_cita` varchar(30) NOT NULL DEFAULT 'reservada',
             `tipo_cita` varchar(50) DEFAULT 'Hora Programada',
             `numero_llegada` int(5) DEFAULT 0,
@@ -294,6 +295,12 @@ try {
 
     foreach ($queries as $sql) {
         $pdo->exec($sql);
+    }
+
+    // Asegurar columna total_usd si la tabla gm_citas ya existía previamente
+    $stmtCol = $pdo->query("SHOW COLUMNS FROM `gm_citas` LIKE 'total_usd'");
+    if ($stmtCol && !$stmtCol->fetch()) {
+        $pdo->exec("ALTER TABLE `gm_citas` ADD COLUMN `total_usd` decimal(10,2) NOT NULL DEFAULT 0.00 AFTER `procedimiento`");
     }
 
     // Poblar configuración inicial (Evolution API + Tokens de Diseño GinevApp)
