@@ -84,6 +84,7 @@ if ($uri === '/' || $uri === '/api') {
             "POST /api/auth/registro-completar",
             "GET /api/catalogos",
             "GET /api/configuracion/tema",
+            "GET /api/marketplace/medicos",
             "GET /api/pacientes",
             "POST /api/pacientes",
             "GET /api/paciente/perfil",
@@ -139,6 +140,9 @@ if ($uri === '/' || $uri === '/api') {
 
 } elseif ($uri === '/api/configuracion/tema' && $method === 'GET') {
     AuthController::obtenerTema();
+
+} elseif ($uri === '/api/marketplace/medicos' && $method === 'GET') {
+    CitaController::listarMarketplace();
 
 } elseif ($uri === '/api/pacientes' && $method === 'GET') {
     if (method_exists(PacienteController::class, 'listarPacientes')) {
