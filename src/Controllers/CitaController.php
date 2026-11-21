@@ -26,34 +26,6 @@ class CitaController {
             SELECT precio 
             FROM gm_servicios 
             WHERE medico_id = :med 
-<?php
-namespace App\Controllers;
-
-use App\Config\Database;
-use PDO;
-use Exception;
-
-class CitaController {
-
-    /**
-     * Calcula el monto total en USD cruzando la lista de servicios seleccionados
-     * (separados por coma) contra el catálogo gm_servicios del médico.
-     */
-    private static function calcularMontoServicios(PDO $pdo, int $medicoId, string $procedimiento): float {
-        $procedimiento = trim($procedimiento);
-        if ($procedimiento === '' || $medicoId <= 0) {
-            return 0.00;
-        }
-
-        $items = array_filter(array_map('trim', explode(',', $procedimiento)));
-        if (empty($items)) {
-            return 0.00;
-        }
-
-        $stmt = $pdo->prepare("
-            SELECT precio 
-            FROM gm_servicios 
-            WHERE medico_id = :med 
               AND TRIM(LOWER(nombre_servicio)) = TRIM(LOWER(:nombre)) 
             LIMIT 1
         ");
