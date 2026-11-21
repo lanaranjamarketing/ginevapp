@@ -65,6 +65,7 @@ if ($uri === '/' || $uri === '/api') {
             "PUT /api/citas",
             "POST /api/citas/check-in-qr",
             "POST /api/citas/iniciar-atencion",
+            "GET /api/marketplace/medicos",
             "GET /api/historias",
             "GET /api/historias/antecedentes",
             "POST /api/historias",
@@ -156,6 +157,9 @@ if ($uri === '/' || $uri === '/api') {
 
 } elseif ($uri === '/api/citas/iniciar-atencion' && $method === 'POST') {
     CitaController::iniciarAtencion($input);
+
+} elseif ($uri === '/api/marketplace/medicos' && $method === 'GET') {
+    CitaController::listarMarketplace();
 
 } elseif ($uri === '/api/historias' && $method === 'GET') {
     HistoriaController::listar();

@@ -26,6 +26,34 @@ class CitaController {
             SELECT precio 
             FROM gm_servicios 
             WHERE medico_id = :med 
+<?php
+namespace App\Controllers;
+
+use App\Config\Database;
+use PDO;
+use Exception;
+
+class CitaController {
+
+    /**
+     * Calcula el monto total en USD cruzando la lista de servicios seleccionados
+     * (separados por coma) contra el catálogo gm_servicios del médico.
+     */
+    private static function calcularMontoServicios(PDO $pdo, int $medicoId, string $procedimiento): float {
+        $procedimiento = trim($procedimiento);
+        if ($procedimiento === '' || $medicoId <= 0) {
+            return 0.00;
+        }
+
+        $items = array_filter(array_map('trim', explode(',', $procedimiento)));
+        if (empty($items)) {
+            return 0.00;
+        }
+
+        $stmt = $pdo->prepare("
+            SELECT precio 
+            FROM gm_servicios 
+            WHERE medico_id = :med 
               AND TRIM(LOWER(nombre_servicio)) = TRIM(LOWER(:nombre)) 
             LIMIT 1
         ");
@@ -383,6 +411,195 @@ class CitaController {
             echo json_encode([
                 "status"  => "success",
                 "mensaje" => "Consulta iniciada y cronómetro de atención activado."
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * GET /api/marketplace/medicos
+     * Devuelve el directorio completo de médicos para el Marketplace de Servicios:
+     * perfil, bio, foto, credenciales, sedes (país/estado) y servicios/combos activos.
+     */
+    public static function listarMarketplace() {
+        try {
+            $pdo = Database::conectar();
+
+            $sql = "SELECT *
+                    FROM gm_usuarios_extendidos
+                    WHERE LOWER(TRIM(rol_medico)) IN ('medico', 'gm_medico')
+                    ORDER BY nombre ASC, apellido ASC";
+            $medicos = $pdo->query($sql)->fetchAll(PDO::FETCH_ASSOC);
+
+            $resultado = [];
+            foreach ($medicos as $med) {
+                $uid = (int)($med['user_id'] ?? 0);
+                if ($uid <= 0) {
+                    $uid = (int)($med['id'] ?? 0);
+                }
+                if ($uid <= 0) {
+                    continue;
+                }
+
+                // 1. Resolver sedes registradas (tabla gm_sedes, configuración del médico y/o calendarios)
+                $sedes = [];
+                $paisBase   = trim((string)($med['pais'] ?? ''));
+                $estadoBase = trim((string)($med['estado'] ?? ''));
+                $dirBase    = trim((string)($med['direccion_detalle'] ?? ''));
+
+                try {
+                    $stmtSedes = $pdo->prepare("SELECT * FROM gm_sedes WHERE medico_id = :mid");
+                    $stmtSedes->execute([':mid' => $uid]);
+                    $rowsSedes = $stmtSedes->fetchAll(PDO::FETCH_ASSOC);
+                    foreach ($rowsSedes as $rs) {
+                        $sedes[] = [
+                            'id'        => (int)($rs['id'] ?? 0),
+                            'nombre'    => trim((string)($rs['nombre'] ?? $rs['nombre_sede'] ?? 'Sede')),
+                            'pais'      => trim((string)($rs['pais'] ?? $paisBase)),
+                            'estado'    => trim((string)($rs['estado'] ?? $rs['ciudad'] ?? $estadoBase)),
+                            'direccion' => trim((string)($rs['direccion'] ?? $rs['direccion_detalle'] ?? $dirBase)),
+                        ];
+                    }
+                } catch (Exception $e) {
+                    // La tabla gm_sedes puede no existir en algunas instalaciones
+                }
+
+                // Revisar si tiene sedes guardadas en gm_configuracion (JSON sedes_medico_X)
+                if (empty($sedes)) {
+                    try {
+                        $stmtCfg = $pdo->prepare("SELECT valor FROM gm_configuracion WHERE clave = :k LIMIT 1");
+                        $stmtCfg->execute([':k' => 'sedes_medico_' . $uid]);
+                        $jsonSedes = $stmtCfg->fetchColumn();
+                        if ($jsonSedes) {
+                            $parsed = json_decode((string)$jsonSedes, true);
+                            if (is_array($parsed)) {
+                                foreach ($parsed as $idx => $sItem) {
+                                    if (is_array($sItem)) {
+                                        $sedes[] = [
+                                            'id'        => $idx + 1,
+                                            'nombre'    => trim((string)($sItem['nombre'] ?? 'Sede ' . ($idx + 1))),
+                                            'pais'      => trim((string)($sItem['pais'] ?? $paisBase)),
+                                            'estado'    => trim((string)($sItem['estado'] ?? $estadoBase)),
+                                            'direccion' => trim((string)($sItem['direccion'] ?? $dirBase)),
+                                        ];
+                                    } elseif (is_string($sItem) && trim($sItem) !== '') {
+                                        $sedes[] = [
+                                            'id'        => $idx + 1,
+                                            'nombre'    => trim($sItem),
+                                            'pais'      => $paisBase,
+                                            'estado'    => $estadoBase,
+                                            'direccion' => $dirBase,
+                                        ];
+                                    }
+                                }
+                            }
+                        }
+                    } catch (Exception $e) {}
+                }
+
+                // Consultar calendario principal y sedes configuradas en dias_config
+                $calendarioId = 0;
+                try {
+                    $stmtCal = $pdo->prepare("SELECT id, nombre_calendario, dias_config FROM gm_calendarios WHERE medico_id = :mid ORDER BY id ASC");
+                    $stmtCal->execute([':mid' => $uid]);
+                    $cals = $stmtCal->fetchAll(PDO::FETCH_ASSOC);
+                    if (!empty($cals)) {
+                        $calendarioId = (int)$cals[0]['id'];
+                        if (empty($sedes)) {
+                            $nombresVistos = [];
+                            foreach ($cals as $calRow) {
+                                $diasCfg = json_decode((string)($calRow['dias_config'] ?? ''), true);
+                                if (is_array($diasCfg)) {
+                                    foreach ($diasCfg as $dInfo) {
+                                        if (is_array($dInfo) && !empty($dInfo['sede'])) {
+                                            $nomSede = trim((string)$dInfo['sede']);
+                                            if ($nomSede !== '' && !in_array($nomSede, $nombresVistos, true)) {
+                                                $nombresVistos[] = $nomSede;
+                                                $sedes[] = [
+                                                    'id'        => count($sedes) + 1,
+                                                    'nombre'    => $nomSede,
+                                                    'pais'      => $paisBase,
+                                                    'estado'    => $estadoBase,
+                                                    'direccion' => $dirBase,
+                                                ];
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception $e) {}
+
+                // Respaldo con país/estado del perfil si aún no hay sedes detalladas
+                if (empty($sedes) && ($paisBase !== '' || $estadoBase !== '' || $dirBase !== '')) {
+                    $sedes[] = [
+                        'id'        => 0,
+                        'nombre'    => 'Consultorio Principal',
+                        'pais'      => $paisBase,
+                        'estado'    => $estadoBase,
+                        'direccion' => $dirBase,
+                    ];
+                }
+
+                // 2. Resolver servicios y combos activos del médico
+                $stmtServ = $pdo->prepare("
+                    SELECT id, tipo, nombre_servicio, descripcion, precio, items_combo, estado
+                    FROM gm_servicios
+                    WHERE medico_id = :mid
+                      AND (estado IS NULL OR TRIM(LOWER(estado)) != 'inactivo')
+                    ORDER BY CASE WHEN LOWER(TRIM(tipo)) = 'combo' THEN 0 ELSE 1 END, nombre_servicio ASC
+                ");
+                $stmtServ->execute([':mid' => $uid]);
+                $servicios = $stmtServ->fetchAll(PDO::FETCH_ASSOC);
+
+                // 3. Resolver avatar_url
+                $avatar = trim((string)($med['avatar_url'] ?? $med['avatar'] ?? ''));
+                if ($avatar === '') {
+                    try {
+                        $stmtMeta = $pdo->prepare("SELECT valor FROM gm_configuracion WHERE clave = :k LIMIT 1");
+                        $stmtMeta->execute([':k' => 'avatar_medico_' . $uid]);
+                        $avatar = trim((string)($stmtMeta->fetchColumn() ?: ''));
+                    } catch (Exception $e) {}
+                }
+
+                // Decodificar redes sociales si vienen en JSON
+                $redesRaw = $med['redes_sociales'] ?? '';
+                $redesDecoded = is_string($redesRaw) ? json_decode($redesRaw, true) : $redesRaw;
+
+                $resultado[] = [
+                    'id'                => (int)($med['id'] ?? $uid),
+                    'user_id'           => $uid,
+                    'calendario_id'     => $calendarioId,
+                    'nombre'            => trim((string)($med['nombre'] ?? '')),
+                    'segundo_nombre'    => trim((string)($med['segundo_nombre'] ?? '')),
+                    'apellido'          => trim((string)($med['apellido'] ?? '')),
+                    'segundo_apellido'  => trim((string)($med['segundo_apellido'] ?? '')),
+                    'sexo'              => trim((string)($med['sexo'] ?? '')),
+                    'especialidad'      => trim((string)($med['especialidad'] ?? 'Especialista Médico')),
+                    'universidad'       => trim((string)($med['universidad'] ?? '')),
+                    'tagline'           => trim((string)($med['tagline'] ?? '')),
+                    'mpps'              => trim((string)($med['mpps'] ?? '')),
+                    'cmm'               => trim((string)($med['cmm'] ?? '')),
+                    'redes_sociales'    => is_array($redesDecoded) ? $redesDecoded : [],
+                    'whatsapp'          => trim((string)($med['whatsapp'] ?? '')),
+                    'email'             => trim((string)($med['email'] ?? '')),
+                    'pais'              => $paisBase,
+                    'estado'            => $estadoBase,
+                    'direccion_detalle' => $dirBase,
+                    'avatar_url'        => $avatar,
+                    'sedes'             => $sedes,
+                    'servicios'         => $servicios,
+                ];
+            }
+
+            echo json_encode([
+                "status"  => "success",
+                "total"   => count($resultado),
+                "medicos" => $resultado
             ], JSON_UNESCAPED_UNICODE);
 
         } catch (Exception $e) {
