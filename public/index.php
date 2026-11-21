@@ -179,6 +179,9 @@ if ($uri === '/' || $uri === '/api') {
 } elseif ($uri === '/api/calendarios/disponibilidad' && $method === 'GET') {
     CalendarioController::disponibilidad();
 
+} elseif ($uri === '/api/calendarios/disponibilidad-mes' && $method === 'GET') {
+    CalendarioController::disponibilidadMes();
+
 } elseif ($uri === '/api/citas' && $method === 'GET') {
     CitaController::listar();
 

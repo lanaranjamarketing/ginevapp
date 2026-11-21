@@ -14,17 +14,16 @@ class CalendarioController {
      */
     public static function listar() {
         try {
-            $pdo = Database::conectar();
-            $medicoId = isset($_GET['medico_id']) ? (int)$_GET['medico_id'] : 0;
+            $pdo = Database::conectar();$medicoId = isset($_GET['medico_id']) ? (int)$_GET['medico_id'] : 0;
 
             if ($medicoId > 0) {
-                $stmt = $pdo->prepare("SELECT * FROM gm_calendarios WHERE medico_id = :med ORDER BY id DESC");
-                $stmt->execute([':med' => $medicoId]);
+                $stmt =$pdo->prepare("SELECT * FROM gm_calendarios WHERE medico_id = :med ORDER BY id DESC");
+                $stmt->execute([':med' =>$medicoId]);
             } else {
-                $stmt = $pdo->query("SELECT * FROM gm_calendarios WHERE estado = 'activo' ORDER BY id DESC");
+                $stmt =$pdo->query("SELECT * FROM gm_calendarios WHERE estado = 'activo' ORDER BY id DESC");
             }
 
-            $calendarios = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $calendarios =$stmt->fetchAll(PDO::FETCH_ASSOC);
 
             foreach ($calendarios as &$cal) {
                 $cal['dias_config'] = json_decode($cal['dias_config'], true) ?? [];
@@ -50,9 +49,9 @@ class CalendarioController {
         try {
             $medicoId = (int)($input['medico_id'] ?? 0);
             $nombre   = trim($input['nombre_calendario'] ?? 'Consulta Médica');
-            $diasConf = $input['dias_config'] ?? [];
+            $diasConf =$input['dias_config'] ?? [];
 
-            if ($medicoId <= 0 || empty($diasConf)) {
+            if ($medicoId <= 0 \vert{}\vert{} empty($diasConf)) {
                 http_response_code(400);
                 echo json_encode(["status" => "error", "mensaje" => "El medico_id y la configuración de días (dias_config) son obligatorios."], JSON_UNESCAPED_UNICODE);
                 return;
@@ -61,13 +60,11 @@ class CalendarioController {
             $pdo = Database::conectar();
             $diasJson = is_string($diasConf) ? $diasConf : json_encode($diasConf, JSON_UNESCAPED_UNICODE);
 
-            // Verificar si el médico ya tiene un calendario (restricción de máximo 1)
-            $check = $pdo->prepare("SELECT id FROM gm_calendarios WHERE medico_id = :med LIMIT 1");
-            $check->execute([':med' => $medicoId]);
-            $existente = $check->fetch(PDO::FETCH_ASSOC);
+            $check =$pdo->prepare("SELECT id FROM gm_calendarios WHERE medico_id = :med LIMIT 1");
+            $check->execute([':med' =>$medicoId]);
+            $existente =$check->fetch(PDO::FETCH_ASSOC);
 
-            if ($existente) {
-                $sql = "UPDATE gm_calendarios SET 
+            if ($existente) {$sql = "UPDATE gm_calendarios SET 
                         nombre_calendario = :nombre,
                         dias_config = :dias,
                         duracion_bloque = :duracion,
@@ -78,15 +75,13 @@ class CalendarioController {
                         default_status = :def_status,
                         estado = :estado
                         WHERE id = :id";
-                $stmt = $pdo->prepare($sql);
-                $stmt->execute([
+                $stmt =$pdo->prepare($sql);$stmt->execute([
                     ':nombre'     => $nombre,
                     ':dias'       => $diasJson,
                     ':duracion'   => (int)($input['duracion_bloque'] ?? 30),
-                    ':cupos'      => (int)($input['cupos_por_bloque'] ?? 1),
-                    ':app_buf'    => $input['appointment_buffer'] ?? 'none',
+                    ':cupos'      => (int)($input['cupos_por_bloque'] ?? 1), ':app_buf'    =>$input['appointment_buffer'] ?? 'none',
                     ':can_buf'    => $input['cancellation_buffer'] ?? '24 hours',
-                    ':prev_date'  => !empty($input['prevent_after_date']) ? $input['prevent_after_date'] : null,
+                    ':prev_date'  => !empty($input['prevent_after_date']) ?$input['prevent_after_date'] : null,
                     ':def_status' => $input['default_status'] ?? 'reservada',
                     ':estado'     => $input['estado'] ?? 'activo',
                     ':id'         => $existente['id']
@@ -102,16 +97,14 @@ class CalendarioController {
                         (medico_id, nombre_calendario, dias_config, duracion_bloque, cupos_por_bloque, appointment_buffer, cancellation_buffer, prevent_after_date, default_status, estado)
                         VALUES 
                         (:med, :nombre, :dias, :duracion, :cupos, :app_buf, :can_buf, :prev_date, :def_status, 'activo')";
-                $stmt = $pdo->prepare($sql);
-                $stmt->execute([
+                $stmt =$pdo->prepare($sql);$stmt->execute([
                     ':med'        => $medicoId,
                     ':nombre'     => $nombre,
                     ':dias'       => $diasJson,
                     ':duracion'   => (int)($input['duracion_bloque'] ?? 30),
-                    ':cupos'      => (int)($input['cupos_por_bloque'] ?? 1),
-                    ':app_buf'    => $input['appointment_buffer'] ?? 'none',
+                    ':cupos'      => (int)($input['cupos_por_bloque'] ?? 1), ':app_buf'    =>$input['appointment_buffer'] ?? 'none',
                     ':can_buf'    => $input['cancellation_buffer'] ?? '24 hours',
-                    ':prev_date'  => !empty($input['prevent_after_date']) ? $input['prevent_after_date'] : null,
+                    ':prev_date'  => !empty($input['prevent_after_date']) ?$input['prevent_after_date'] : null,
                     ':def_status' => $input['default_status'] ?? 'reservada'
                 ]);
 
@@ -130,6 +123,108 @@ class CalendarioController {
     }
 
     /**
+     * GET /api/calendarios/disponibilidad-mes?medico_id=X&anio=YYYY&mes=MM
+     * Devuelve el mapa diario del mes con estado (disponible, agotado, no_laboral) y cupos libres
+     */
+    public static function disponibilidadMes() {
+        try {
+            $medicoId = isset($_GET['medico_id']) ? (int)$_GET['medico_id'] : 0;
+            $anio     = isset($_GET['anio']) ? (int)$_GET['anio'] : (int)date('Y');$mes      = isset($_GET['mes']) ? (int)$_GET['mes'] : (int)date('m');
+
+            if ($medicoId <= 0 || $mes < 1 \vert{}\vert{}$mes > 12) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "Parámetros medico_id, anio y mes inválidos."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo = Database::conectar();
+            $stmt =$pdo->prepare("SELECT * FROM gm_calendarios WHERE medico_id = :med AND estado = 'activo' LIMIT 1");
+            $stmt->execute([':med' =>$medicoId]);
+            $cal =$stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$cal) {
+                echo json_encode([
+                    "status" => "success",
+                    "dias"   => new \stdClass()
+                ], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $diasConfig     = json_decode($cal['dias_config'], true) ?? [];
+            $duracionMin    = max(5, (int)($cal['duracion_bloque'] ?? 30));
+            $cuposPorBloque = max(1, (int)($cal['cupos_por_bloque'] ?? 1));
+            $preventAfter   =$cal['prevent_after_date'] ?? null;
+            $hoyStr         = date('Y-m-d');
+
+            $primerDia = sprintf('%04d-%02d-01', $anio,$mes);
+            $ultimoDia = date('Y-m-t', strtotime($primerDia));
+
+            // Contar citas no canceladas del mes agrupadas por fecha
+            $citasStmt =$pdo->prepare("SELECT fecha_cita, COUNT(*) as total FROM gm_citas WHERE medico_id = :med AND fecha_cita BETWEEN :ini AND :fin AND estado_cita != 'cancelada' GROUP BY fecha_cita");
+            $citasStmt->execute([':med' => $medicoId, ':ini' =>$primerDia, ':fin' => $ultimoDia]);$citasPorFecha = [];
+            while ($row = $citasStmt->fetch(PDO::FETCH_ASSOC)) {$citasPorFecha[$row['fecha_cita']] = (int)$row['total'];
+            }
+
+            $totalDiasMes = (int)date('t', strtotime($primerDia));$resultadoDias = [];
+
+            for ($d = 1; $d <= $totalDiasMes; $d++) {
+                $fechaStr = sprintf('\%04d-\%02d-\%02d',$anio, $mes,$d);
+                if ($fechaStr < $hoyStr \vert{}\vert{} (!empty($preventAfter) && $fechaStr >$preventAfter)) {
+                    $resultadoDias[$fechaStr] = [
+                        "estado" => "no_laboral",
+                        "cupos_disponibles" => 0
+                    ];
+                    continue;
+                }
+
+                $dt = new DateTime($fechaStr);$diaEn = $dt->format('l');$configDia = null;
+                foreach ($diasConfig as $k =>$v) {
+                    if (strcasecmp($k,$diaEn) === 0) {
+                        $configDia =$v;
+                        break;
+                    }
+                }
+
+                if (!$configDia) {
+                    $resultadoDias[$fechaStr] = [
+                        "estado" => "no_laboral",
+                        "cupos_disponibles" => 0
+                    ];
+                    continue;
+                }
+
+                $modalidadRaw   = strtolower(trim((string)($configDia['modalidad'] ?? $configDia['tipo_atencion'] ?? 'horario_especifico')));
+                $esOrdenLlegada = ($modalidadRaw === 'orden_llegada' || $modalidadRaw === 'orden de llegada');$ocupados       = $citasPorFecha[$fechaStr] ?? 0;
+
+                if ($esOrdenLlegada) {
+                    $cuposTotales = (int)($configDia['cupos_dia'] ?? $configDia['cupos'] ?? $cuposPorBloque);
+                    if ($cuposTotales <= 0) $cuposTotales = 15; } else {$hIni = new DateTime($fechaStr . ' ' . ($configDia['hora_inicio'] ?? '08:00'));
+                    $hFin = new DateTime($fechaStr . ' ' . ($configDia['hora_fin'] ?? '16:00'));$mins = max(0, ($hFin->getTimestamp() -$hIni->getTimestamp()) / 60);
+                    $numBloques = (int)floor($mins / $duracionMin);$cuposTotales = max(1, $numBloques) *$cuposPorBloque;
+                }
+
+                $libres = max(0, $cuposTotales -$ocupados);
+                $resultadoDias[$fechaStr] = [
+                    "estado"            => $libres > 0 ? "disponible" : "agotado",
+                    "modalidad"         => $esOrdenLlegada ? "orden_llegada" : "horario_especifico",
+                    "cupos_disponibles" => $libres
+                ];
+            }
+
+            echo json_encode([
+                "status" => "success",
+                "anio"   => $anio,
+                "mes"    => $mes,
+                "dias"   => $resultadoDias
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
      * GET /api/calendarios/disponibilidad?medico_id=X&fecha=YYYY-MM-DD
      * Genera los bloques horarios o el cupo diario por orden de llegada
      */
@@ -138,16 +233,16 @@ class CalendarioController {
             $medicoId = isset($_GET['medico_id']) ? (int)$_GET['medico_id'] : 0;
             $fecha    = trim($_GET['fecha'] ?? '');
 
-            if ($medicoId <= 0 || empty($fecha)) {
+            if ($medicoId <= 0 \vert{}\vert{} empty($fecha)) {
                 http_response_code(400);
                 echo json_encode(["status" => "error", "mensaje" => "Los parámetros medico_id y fecha (YYYY-MM-DD) son obligatorios."], JSON_UNESCAPED_UNICODE);
                 return;
             }
 
             $pdo = Database::conectar();
-            $stmt = $pdo->prepare("SELECT * FROM gm_calendarios WHERE medico_id = :med AND estado = 'activo' LIMIT 1");
-            $stmt->execute([':med' => $medicoId]);
-            $cal = $stmt->fetch(PDO::FETCH_ASSOC);
+            $stmt =$pdo->prepare("SELECT * FROM gm_calendarios WHERE medico_id = :med AND estado = 'activo' LIMIT 1");
+            $stmt->execute([':med' =>$medicoId]);
+            $cal =$stmt->fetch(PDO::FETCH_ASSOC);
 
             if (!$cal) {
                 http_response_code(404);
@@ -155,8 +250,7 @@ class CalendarioController {
                 return;
             }
 
-            // Validar fecha límite (prevent_after_date)
-            if (!empty($cal['prevent_after_date']) && $fecha > $cal['prevent_after_date']) {
+            if (!empty($cal['prevent_after_date']) && $fecha >$cal['prevent_after_date']) {
                 echo json_encode([
                     "status"     => "success",
                     "disponible" => false,
@@ -167,14 +261,13 @@ class CalendarioController {
             }
 
             $dt = new DateTime($fecha);
-            $diaSemanaEn = $dt->format('l'); // Monday, Tuesday, etc.
+            $diaSemanaEn =$dt->format('l');
             $diasConfig  = json_decode($cal['dias_config'], true) ?? [];
 
-            // Buscar configuración insensible a mayúsculas/minúsculas
             $configDia = null;
-            foreach ($diasConfig as $k => $v) {
-                if (strcasecmp($k, $diaSemanaEn) === 0) {
-                    $configDia = $v;
+            foreach ($diasConfig as $k =>$v) {
+                if (strcasecmp($k,$diaSemanaEn) === 0) {
+                    $configDia =$v;
                     break;
                 }
             }
@@ -189,28 +282,22 @@ class CalendarioController {
                 return;
             }
 
-            $sede           = $configDia['sede'] ?? 'Consultorio Principal';
-            $modalidadRaw   = strtolower(trim((string)($configDia['modalidad'] ?? $configDia['tipo_atencion'] ?? 'horario_especifico')));
-            $esOrdenLlegada = ($modalidadRaw === 'orden_llegada' || $modalidadRaw === 'orden de llegada');
+            $sede           =$configDia['sede'] ?? 'Consultorio Principal';
+            $modalidadRaw   = strtolower(trim((string)($configDia['modalidad'] ?? $configDia['tipo_atencion'] ?? 'horario_especifico')));$esOrdenLlegada = ($modalidadRaw === 'orden_llegada' \vert{}\vert{}$modalidadRaw === 'orden de llegada');
 
-            $horaInicioStr  = $configDia['hora_inicio'] ?? '08:00';
-            $horaFinStr     = $configDia['hora_fin'] ?? '16:00';
-            $horaInicio     = new DateTime($fecha . ' ' . $horaInicioStr);
-            $horaFin        = new DateTime($fecha . ' ' . $horaFinStr);
+            $horaInicioStr  =$configDia['hora_inicio'] ?? '08:00';
+            $horaFinStr     =$configDia['hora_fin'] ?? '16:00';
+            $horaInicio     = new DateTime($fecha . ' ' . $horaInicioStr);$horaFin        = new DateTime($fecha . ' ' .$horaFinStr);
             $duracionMin    = max(5, (int)($cal['duracion_bloque'] ?? 30));
             $cuposPorBloque = max(1, (int)($cal['cupos_por_bloque'] ?? 1));
 
-            // Si el día está configurado por ORDEN DE LLEGADA, no fraccionar en bloques horarios
             if ($esOrdenLlegada) {
                 $cuposDia = (int)($configDia['cupos_dia'] ?? $configDia['cupos'] ?? $cuposPorBloque);
-                if ($cuposDia <= 0) {
-                    $cuposDia = 15;
+                if ($cuposDia <= 0) {$cuposDia = 15;
                 }
 
-                $citasDiaStmt = $pdo->prepare("SELECT COUNT(*) FROM gm_citas WHERE medico_id = :med AND fecha_cita = :fecha AND estado_cita != 'cancelada'");
-                $citasDiaStmt->execute([':med' => $medicoId, ':fecha' => $fecha]);
-                $ocupadosDia = (int)$citasDiaStmt->fetchColumn();
-                $libresDia   = max(0, $cuposDia - $ocupadosDia);
+                $citasDiaStmt =$pdo->prepare("SELECT COUNT(*) FROM gm_citas WHERE medico_id = :med AND fecha_cita = :fecha AND estado_cita != 'cancelada'");
+                $citasDiaStmt->execute([':med' =>$medicoId, ':fecha' => $fecha]);$ocupadosDia = (int)$citasDiaStmt->fetchColumn();$libresDia   = max(0, $cuposDia -$ocupadosDia);
 
                 $bloques = [[
                     "modalidad"         => "orden_llegada",
@@ -241,23 +328,17 @@ class CalendarioController {
                 return;
             }
 
-            // Modalidad HORARIO ESPECÍFICO (por bloques)
-            $citasStmt = $pdo->prepare("SELECT hora_cita, COUNT(*) as ocupados FROM gm_citas WHERE medico_id = :med AND fecha_cita = :fecha AND estado_cita != 'cancelada' GROUP BY hora_cita");
-            $citasStmt->execute([':med' => $medicoId, ':fecha' => $fecha]);
-            $ocupacionMap = [];
-            while ($row = $citasStmt->fetch(PDO::FETCH_ASSOC)) {
-                $horaKey = substr($row['hora_cita'], 0, 5); // HH:MM
-                $ocupacionMap[$horaKey] = (int)$row['ocupados'];
+            $citasStmt =$pdo->prepare("SELECT hora_cita, COUNT(*) as ocupados FROM gm_citas WHERE medico_id = :med AND fecha_cita = :fecha AND estado_cita != 'cancelada' GROUP BY hora_cita");
+            $citasStmt->execute([':med' =>$medicoId, ':fecha' => $fecha]);$ocupacionMap = [];
+            while ($row = $citasStmt->fetch(PDO::FETCH_ASSOC)) {$horaKey = substr($row['hora_cita'], 0, 5);$ocupacionMap[$horaKey] = (int)$row['ocupados'];
             }
 
             $bloques = [];
-            $actual  = clone $horaInicio;
-            $intervalo = new DateInterval('PT' . $duracionMin . 'M');
+            $actual  = clone$horaInicio;
+            $intervalo = new DateInterval('PT' .$duracionMin . 'M');
 
-            while ($actual < $horaFin) {
-                $horaStr = $actual->format('H:i');
-                $ocupados = $ocupacionMap[$horaStr] ?? 0;
-                $libres   = max(0, $cuposPorBloque - $ocupados);
+            while ($actual < $horaFin) {$horaStr = $actual->format('H:i');$ocupados = $ocupacionMap[$horaStr] ?? 0;
+                $libres   = max(0, $cuposPorBloque -$ocupados);
 
                 $bloques[] = [
                     "modalidad"         => "horario_especifico",
