@@ -127,8 +127,11 @@ class AuthController {
             $pdo = Database::conectar();
             $config = self::obtenerConfigEvolution($pdo);
 
-            $stmt = $pdo->prepare("SELECT id, user_id, nombre, apellido, whatsapp, rol_medico FROM gm_usuarios_extendidos WHERE whatsapp = :id OR cedula = :id LIMIT 1");
-            $stmt->execute([':id' => $identificador]);
+            $stmt = $pdo->prepare("SELECT id, user_id, nombre, apellido, whatsapp, rol_medico FROM gm_usuarios_extendidos WHERE whatsapp = :wa OR cedula = :ced LIMIT 1");
+            $stmt->execute([
+                ':wa'  => $identificador,
+                ':ced' => $identificador
+            ]);
             $usuario = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if (!$usuario) {
@@ -360,19 +363,20 @@ class AuthController {
             echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
         }
     }
-public static function obtenerTema() {
-    try {
-        $pdo = Database::conectar();
-        self::asegurarTablas($pdo);
-        $stmt = $pdo->query("SELECT `clave`, `valor` FROM `gm_configuracion` WHERE `clave` LIKE 'theme_%'");
-        $tema = [];
-        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-            $tema[$row['clave']] = $row['valor'];
+
+    public static function obtenerTema() {
+        try {
+            $pdo = Database::conectar();
+            self::asegurarTablas($pdo);
+            $stmt = $pdo->query("SELECT `clave`, `valor` FROM `gm_configuracion` WHERE `clave` LIKE 'theme_%'");
+            $tema = [];
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $tema[$row['clave']] = $row['valor'];
+            }
+            echo json_encode(["status" => "success", "tema" => $tema], JSON_UNESCAPED_UNICODE);
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
         }
-        echo json_encode(["status" => "success", "tema" => $tema], JSON_UNESCAPED_UNICODE);
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
     }
-}
 }
