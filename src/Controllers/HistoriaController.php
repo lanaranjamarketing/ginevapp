@@ -2,6 +2,7 @@
 namespace App\Controllers;
 
 use App\Config\Database;
+use App\Documentos\InformeMedicoPdfGenerator;
 use PDO;
 use Exception;
 
@@ -53,7 +54,9 @@ class HistoriaController {
             foreach ($historias as &$hist) {
                 $examStmt->execute([':hid' => $hist['id']]);
                 $hist['examenes'] = $examStmt->fetchAll(PDO::FETCH_ASSOC);
-                $hist['pdf_url']  = '/api/historias/pdf?id=' . $hist['id'];
+                $hist['pdf_url']  = !empty($hist['url_pdf_informe'])
+                    ? $hist['url_pdf_informe']
+                    : (!empty($hist['pdf_path']) ? $hist['pdf_path'] : '/api/historias/pdf?id=' . $hist['id']);
             }
 
             echo json_encode([
@@ -105,7 +108,7 @@ class HistoriaController {
 
     /**
      * POST /api/historias
-     * Guarda la historia clínica completa, exámenes relacionales, finanza BCV y cierra la cita
+     * Guarda la historia clínica completa, exámenes relacionales, finanza BCV, cierra la cita y genera el informe PDF
      */
     public static function crear($input) {
         $pdo = null;
@@ -241,7 +244,7 @@ class HistoriaController {
                         $ext = pathinfo($_FILES['examenes']['name'][$idx]['archivo'], PATHINFO_EXTENSION);
                         $fileName = 'exam_' . $historiaId . '_' . $idx . '_' . time() . '.' . $ext;
                         if (move_uploaded_file($_FILES['examenes']['tmp_name'][$idx]['archivo'], $uploadDir . $fileName)) {
-                            $archivoUrl = 'https://dashboard.ginevapp.com/uploads/examenes/' . $fileName;
+                            $archivoUrl = '/uploads/examenes/' . $fileName;
                         }
                     }
 
@@ -293,6 +296,13 @@ class HistoriaController {
                     ->execute([':cid' => $citaId]);
             }
 
+            // 6. Generar archivo oficial del Informe Médico con tema/colores dinámicos del médico
+            $temaOverride = [
+                'color_primario'   => $input['color_primario'] ?? null,
+                'color_secundario' => $input['color_secundario'] ?? null,
+            ];
+            $generado = InformeMedicoPdfGenerator::generarInformeMedicoPdf($historiaId, $pdo, $temaOverride);
+
             $pdo->commit();
 
             http_response_code(201);
@@ -302,7 +312,7 @@ class HistoriaController {
                 "historia_id"     => $historiaId,
                 "cita_id"         => $citaId,
                 "hash_validacion" => $hashValidacion,
-                "pdf_url"         => "/api/historias/pdf?id=" . $historiaId
+                "pdf_url"         => !empty($generado['url']) ? $generado['url'] : ("/api/historias/pdf?id=" . $historiaId)
             ], JSON_UNESCAPED_UNICODE);
 
         } catch (Exception $e) {
@@ -316,7 +326,7 @@ class HistoriaController {
 
     /**
      * GET /api/historias/pdf?id=X
-     * Genera la vista imprimible en PDF del Informe Médico y Récipe con QR de verificación
+     * Genera/muestra la plantilla oficial corporativa dinámica desde InformeMedicoPdfGenerator
      */
     public static function imprimirPdf() {
         try {
@@ -327,140 +337,20 @@ class HistoriaController {
                 return;
             }
 
-            $pdo = Database::conectar();
-            $stmt = $pdo->prepare("SELECT 
-                    h.*,
-                    CONCAT(p.nombre, ' ', p.apellido) AS paciente_nombre,
-                    p.tipo_identificacion AS paciente_tipo_id,
-                    p.cedula AS paciente_cedula,
-                    p.sexo AS paciente_sexo,
-                    p.edad AS paciente_edad,
-                    p.peso AS paciente_peso,
-                    p.estatura AS paciente_estatura,
-                    CONCAT(m.nombre, ' ', m.apellido) AS medico_nombre,
-                    m.sexo AS medico_sexo,
-                    m.especialidad AS medico_especialidad,
-                    m.mpps AS medico_mpps,
-                    m.cmm AS medico_cmm,
-                    m.whatsapp AS medico_telefono,
-                    m.email AS medico_email
-                FROM gm_historias_medicas h
-                LEFT JOIN gm_usuarios_extendidos p ON h.paciente_id = p.user_id
-                LEFT JOIN gm_usuarios_extendidos m ON h.medico_id = m.user_id
-                WHERE h.id = :id LIMIT 1");
-            $stmt->execute([':id' => $historiaId]);
-            $h = $stmt->fetch(PDO::FETCH_ASSOC);
+            $temaOverride = [
+                'color_primario'   => $_GET['color_primario'] ?? null,
+                'color_secundario' => $_GET['color_secundario'] ?? null,
+            ];
 
-            if (!$h) {
+            $generado = InformeMedicoPdfGenerator::generarInformeMedicoPdf($historiaId, null, $temaOverride);
+            if (empty($generado['html'])) {
                 http_response_code(404);
                 echo "Informe médico no encontrado.";
                 return;
             }
 
-            $exStmt = $pdo->prepare("SELECT * FROM gm_historias_examenes WHERE historia_id = :hid ORDER BY id ASC");
-            $exStmt->execute([':hid' => $historiaId]);
-            $examenes = $exStmt->fetchAll(PDO::FETCH_ASSOC);
-
             header('Content-Type: text/html; charset=utf-8');
-            $prefijo = (strtolower(trim($h['medico_sexo'] ?? '')) === 'femenino') ? 'Dra.' : 'Dr.';
-            $fechaFmt = !empty($h['fecha_registro']) ? date('d/m/Y h:i A', strtotime($h['fecha_registro'])) : date('d/m/Y');
-            $qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=110x110&data=' . urlencode('GINEVAPP-HIST-' . $historiaId . '-' . ($h['hash_validacion'] ?? ''));
-
-            echo '<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="UTF-8">
-<title>Informe Médico #' . $historiaId . '</title>
-<style>
-  @page { size: letter; margin: 14mm; }
-  body { font-family: Arial, Helvetica, sans-serif; color: #1e293b; font-size: 12.5px; line-height: 1.45; margin: 0; padding: 20px; }
-  .toolbar { background: #0f172a; color: #fff; padding: 10px 18px; border-radius: 8px; margin-bottom: 18px; display: flex; justify-content: space-between; align-items: center; }
-  .btn-print { background: #16a085; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; font-weight: bold; cursor: pointer; }
-  @media print { .toolbar { display: none !important; } body { padding: 0; } }
-  .header { border-bottom: 2px solid #16a085; padding-bottom: 12px; margin-bottom: 14px; display: flex; justify-content: space-between; }
-  .header h1 { margin: 0; font-size: 19px; color: #0f766e; }
-  .box { border: 1px solid #cbd5e1; border-radius: 6px; padding: 10px 14px; margin-bottom: 12px; background: #f8fafc; }
-  .box-title { font-weight: bold; color: #0f766e; font-size: 13px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; margin-bottom: 8px; text-transform: uppercase; }
-  .grid { display: flex; flex-wrap: wrap; gap: 12px; }
-  .col { flex: 1; min-width: 180px; }
-  .footer { margin-top: 24px; border-top: 1px solid #cbd5e1; padding-top: 12px; display: flex; justify-content: space-between; align-items: center; }
-  .firma { text-align: center; width: 240px; border-top: 1px solid #334155; padding-top: 6px; font-weight: bold; }
-</style>
-</head>
-<body onload="window.print()">
-  <div class="toolbar">
-    <span>Informe Clínico y Récipe Médico • Historia #' . $historiaId . '</span>
-    <button class="btn-print" onclick="window.print()">🖨️ Imprimir / Guardar PDF</button>
-  </div>
-
-  <div class="header">
-    <div>
-      <h1>' . htmlspecialchars($prefijo . ' ' . ($h['medico_nombre'] ?? '')) . '</h1>
-      <div><strong>Especialidad:</strong> ' . htmlspecialchars($h['medico_especialidad'] ?? 'Ginecología y Obstetricia') . '</div>
-      <div>MPPS: ' . htmlspecialchars($h['medico_mpps'] ?? 'N/D') . ' • CMM: ' . htmlspecialchars($h['medico_cmm'] ?? 'N/D') . '</div>
-    </div>
-    <div style="text-align:right;">
-      <strong>INFORME MÉDICO</strong><br>
-      N.º Historia: <strong>#' . $historiaId . '</strong><br>
-      Fecha: ' . htmlspecialchars($fechaFmt) . '
-    </div>
-  </div>
-
-  <div class="box">
-    <div class="box-title">Datos de Identificación del Paciente</div>
-    <div class="grid">
-      <div class="col"><strong>Paciente:</strong> ' . htmlspecialchars($h['paciente_nombre'] ?? '') . '</div>
-      <div class="col"><strong>Cédula:</strong> ' . htmlspecialchars(($h['paciente_tipo_id'] ?? 'V') . '-' . ($h['paciente_cedula'] ?? '')) . '</div>
-      <div class="col"><strong>Edad / Sexo:</strong> ' . htmlspecialchars(($h['paciente_edad'] ?? 'N/D') . ' años / ' . ($h['paciente_sexo'] ?? '')) . '</div>
-      <div class="col"><strong>Peso / Estatura:</strong> ' . htmlspecialchars(($h['paciente_peso'] ?? 'N/D') . ' kg / ' . ($h['paciente_estatura'] ?? 'N/D')) . '</div>
-    </div>
-  </div>
-
-  <div class="box">
-    <div class="box-title">Motivo de Consulta y Evaluación Clínica</div>
-    <p><strong>Motivo:</strong> ' . nl2br(htmlspecialchars($h['motivo_consulta'] ?? '')) . '</p>
-    <p><strong>Signos Vitales:</strong> TA: ' . htmlspecialchars($h['tension_arterial'] ?: 'N/D') . ' • FC: ' . htmlspecialchars($h['frecuencia_cardiaca'] ?: 'N/D') . '</p>';
-
-            if (!empty($h['examen_mamario'])) {
-                echo '<p><strong>Examen Mamario:</strong> ' . nl2br(htmlspecialchars($h['examen_mamario'])) . '</p>';
-            }
-            if (!empty($h['examen_pelvico'])) {
-                echo '<p><strong>Examen Pélvico:</strong> ' . nl2br(htmlspecialchars($h['examen_pelvico'])) . '</p>';
-            }
-            echo '</div>
-
-  <div class="box">
-    <div class="box-title">Diagnóstico y Plan Terapéutico</div>
-    <p><strong>Diagnóstico Definitivo:</strong><br>' . nl2br(htmlspecialchars($h['diagnostico'] ?? '')) . '</p>';
-
-            if (!empty($h['plan_medico'])) {
-                echo '<p><strong>Plan de Trabajo / Indicaciones:</strong><br>' . nl2br(htmlspecialchars($h['plan_medico'])) . '</p>';
-            }
-            if (!empty($h['tratamiento'])) {
-                echo '<p><strong>Tratamiento / Récipe Prescrito:</strong><br>' . nl2br(htmlspecialchars($h['tratamiento'])) . '</p>';
-            }
-            echo '</div>';
-
-            if (!empty($examenes)) {
-                echo '<div class="box"><div class="box-title">Exámenes Complementarios</div><ul>';
-                foreach ($examenes as $ex) {
-                    echo '<li><strong>' . htmlspecialchars($ex['tipo_examen']) . '</strong> (' . htmlspecialchars($ex['estado_examen']) . '): ' . htmlspecialchars($ex['descripcion_solicitud'] ?? '') . '</li>';
-                }
-                echo '</ul></div>';
-            }
-
-            echo '<div class="footer">
-    <div>
-      <img src="' . htmlspecialchars($qrUrl) . '" alt="QR Validación" width="90" height="90"><br>
-      <small style="color:#64748b;">Código de verificación digital</small>
-    </div>
-    <div class="firma">
-      ' . htmlspecialchars($prefijo . ' ' . ($h['medico_nombre'] ?? '')) . '<br>
-      <small>Firma y Sello Médico</small>
-    </div>
-  </div>
-</body>
-</html>';
+            echo $generado['html'];
         } catch (Exception $e) {
             http_response_code(500);
             echo "Error generando informe PDF: " . htmlspecialchars($e->getMessage());

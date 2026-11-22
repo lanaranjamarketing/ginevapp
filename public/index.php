@@ -64,6 +64,7 @@ use App\Controllers\CitaController;
 use App\Controllers\HistoriaController;
 use App\Controllers\FinanzaServicioController;
 use App\Controllers\AjustesMedicoController;
+use App\Documentos\ValidadorInformePublico;
 
 $rawUri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?: '/';
 $uri = ($rawUri !== '/' && substr($rawUri, -1) === '/') ? rtrim($rawUri, '/') : $rawUri;
@@ -208,6 +209,12 @@ if ($uri === '/' || $uri === '/api') {
 
 } elseif ($uri === '/api/examenes' && $method === 'PUT') {
     HistoriaController::actualizarExamen($input);
+
+} elseif ($uri === '/api/historias/pdf' && $method === 'GET') {
+    HistoriaController::imprimirPdf();
+
+    } elseif (($uri === '/validar-informe' || $uri === '/validar-informe/' || $uri === '/api/validar-informe') && $method === 'GET') {
+    ValidadorInformePublico::renderizar();
 
 } elseif ($uri === '/api/servicios' && $method === 'GET') {
     FinanzaServicioController::listarServicios();
