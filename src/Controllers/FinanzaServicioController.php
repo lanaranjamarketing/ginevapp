@@ -3,6 +3,7 @@ namespace App\Controllers;
 
 use App\Config\Database;
 use App\Documentos\FacturaPdfGenerator;
+use App\Documentos\PresupuestoPdfGenerator;
 use PDO;
 use Exception;
 
@@ -606,6 +607,148 @@ class FinanzaServicioController {
                 "mensaje"  => "Tasa BCV sincronizada correctamente.",
                 "fecha"    => $ahora,
                 "tasa_usd" => $tasaUsd
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+    /**
+     * GET /api/presupuestos?medico_id=X&estatus=todos|vigente|vencido&fecha_desde=Y&fecha_hasta=Z
+     */
+    public static function listarPresupuestos() {
+        try {
+            $pdo = Database::conectar();
+            PresupuestoPdfGenerator::asegurarTablaPresupuestos($pdo);
+
+            $condiciones = ["1=1"];
+            $params = [];
+
+            if (!empty($_GET['medico_id'])) {
+                $condiciones[] = "medico_id = :med";
+                $params[':med'] = (int)$_GET['medico_id'];
+            }
+            if (!empty($_GET['fecha_desde'])) {
+                $condiciones[] = "fecha_emision >= :f_desde";
+                $params[':f_desde'] = trim((string)$_GET['fecha_desde']);
+            }
+            if (!empty($_GET['fecha_hasta'])) {
+                $condiciones[] = "fecha_emision <= :f_hasta";
+                $params[':f_hasta'] = trim((string)$_GET['fecha_hasta']);
+            }
+
+            $estatus = strtolower(trim((string)($_GET['estatus'] ?? '')));
+            if ($estatus === 'vigente') {
+                $condiciones[] = "CURDATE() <= fecha_vencimiento";
+            } elseif ($estatus === 'vencido') {
+                $condiciones[] = "CURDATE() > fecha_vencimiento";
+            }
+
+            $whereSql = implode(" AND ", $condiciones);
+            $stmt = $pdo->prepare("
+                SELECT *,
+                       IF(CURDATE() <= fecha_vencimiento, 'vigente', 'vencido') AS estatus_vigencia
+                FROM gm_presupuestos
+                WHERE $whereSql
+                ORDER BY id DESC
+            ");
+            $stmt->execute($params);
+            $lista = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($lista as &$item) {
+                $item['items'] = !empty($item['items_json']) ? (json_decode($item['items_json'], true) ?: []) : [];
+            }
+
+            echo json_encode([
+                "status" => "success",
+                "total"  => count($lista),
+                "data"   => $lista
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * POST /api/presupuestos
+     * Guarda el presupuesto en BD con vencimiento automático de +3 días y genera el PDF/HTML oficial
+     */
+    public static function crearPresupuesto($input = null) {
+        try {
+            if ($input === null) {
+                $input = json_decode(file_get_contents('php://input'), true) ?: [];
+            }
+
+            $medicoId   = (int)($input['medico_id'] ?? 0);
+            $pacienteId = (int)($input['paciente_id'] ?? 0);
+            $pacNombre  = trim((string)($input['paciente_nombre'] ?? ''));
+            $pacCedula  = trim((string)($input['paciente_cedula'] ?? ''));
+            $pacTel     = trim((string)($input['paciente_telefono'] ?? ''));
+            $pacDir     = trim((string)($input['paciente_direccion'] ?? ''));
+            $items      = is_array($input['items'] ?? null) ? $input['items'] : [];
+            $obs        = trim((string)($input['observaciones'] ?? ''));
+
+            if ($medicoId <= 0 || empty($items)) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "Médico y al menos un servicio son obligatorios."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo = Database::conectar();
+            PresupuestoPdfGenerator::asegurarTablaPresupuestos($pdo);
+
+            $tasaVal = $pdo->query("SELECT tasa_usd FROM gm_tasa_bcv ORDER BY fecha DESC LIMIT 1")->fetchColumn();
+            $tasaBcv = !empty($input['tasa_bcv']) ? (float)$input['tasa_bcv'] : (($tasaVal && (float)$tasaVal > 0) ? (float)$tasaVal : 1.0000);
+
+            $totalUsd = 0.0;
+            foreach ($items as $it) {
+                $cant = max(1, (int)($it['cantidad'] ?? 1));
+                $prec = (float)($it['precio_usd'] ?? $it['precio'] ?? 0);
+                $totalUsd += ($cant * $prec);
+            }
+            $totalUsd = round($totalUsd, 2);
+            $totalBs  = round($totalUsd * $tasaBcv, 2);
+
+            $fechaEmision     = date('Y-m-d');
+            $fechaVencimiento = date('Y-m-d', strtotime('+3 days'));
+
+            $sql = "INSERT INTO gm_presupuestos
+                    (medico_id, paciente_id, paciente_nombre, paciente_cedula, paciente_telefono, paciente_direccion,
+                     fecha_emision, fecha_vencimiento, items_json, total_usd, total_bs, tasa_bcv, observaciones)
+                    VALUES
+                    (:med, :pac, :pnom, :pced, :ptel, :pdir, :femi, :fvenc, :items, :tusd, :tbs, :tasa, :obs)";
+            $pdo->prepare($sql)->execute([
+                ':med'   => $medicoId,
+                ':pac'   => $pacienteId,
+                ':pnom'  => $pacNombre,
+                ':pced'  => $pacCedula,
+                ':ptel'  => $pacTel,
+                ':pdir'  => $pacDir,
+                ':femi'  => $fechaEmision,
+                ':fvenc' => $fechaVencimiento,
+                ':items' => json_encode($items, JSON_UNESCAPED_UNICODE),
+                ':tusd'  => $totalUsd,
+                ':tbs'   => $totalBs,
+                ':tasa'  => $tasaBcv,
+                ':obs'   => $obs,
+            ]);
+
+            $presId = (int)$pdo->lastInsertId();
+            $temaOverride = ['color_primario' => $input['color_primario'] ?? null];
+            $gen = PresupuestoPdfGenerator::generarPresupuestoPdf($presId, $pdo, $temaOverride);
+
+            http_response_code(201);
+            echo json_encode([
+                "status"             => "success",
+                "mensaje"            => "Presupuesto N° " . $gen['numero_presupuesto'] . " generado (válido hasta " . date('d/m/Y', strtotime($fechaVencimiento)) . ").",
+                "id"                 => $presId,
+                "numero_presupuesto" => $gen['numero_presupuesto'],
+                "fecha_emision"      => $fechaEmision,
+                "fecha_vencimiento"  => $fechaVencimiento,
+                "url_pdf"            => $gen['url']
             ], JSON_UNESCAPED_UNICODE);
 
         } catch (Exception $e) {
