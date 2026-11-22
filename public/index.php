@@ -55,6 +55,7 @@ require_once __DIR__ . '/../src/Controllers/AuthController.php';
 require_once __DIR__ . '/../src/Controllers/CalendarioController.php';
 require_once __DIR__ . '/../src/Controllers/CitaController.php';
 require_once __DIR__ . '/../src/Controllers/HistoriaController.php';
+require_once __DIR__ . '/../src/Controllers/ArchivoController.php';
 require_once __DIR__ . '/../src/Controllers/FinanzaServicioController.php';
 require_once __DIR__ . '/../src/Controllers/AjustesMedicoController.php';
 require_once __DIR__ . '/../src/Documentos/PresupuestoPdfGenerator.php';
@@ -66,6 +67,7 @@ use App\Controllers\AuthController;
 use App\Controllers\CalendarioController;
 use App\Controllers\CitaController;
 use App\Controllers\HistoriaController;
+use App\Controllers\ArchivoController;
 use App\Controllers\FinanzaServicioController;
 use App\Controllers\AjustesMedicoController;
 use App\Documentos\ValidadorInformePublico;
@@ -109,6 +111,9 @@ if ($uri === '/' || $uri === '/api') {
             "GET /api/historias/antecedentes",
             "POST /api/historias",
             "GET /api/historias/pdf",
+            "GET /api/archivo",
+            "POST /api/archivo/examenes",
+            "PUT /api/archivo/examenes",
             "GET /validar-informe",
             "PUT /api/examenes",
             "GET /api/servicios",
@@ -218,6 +223,15 @@ if ($uri === '/' || $uri === '/api') {
 } elseif ($uri === '/api/historias' && $method === 'POST') {
     HistoriaController::crear($input);
 
+} elseif ($uri === '/api/archivo' && $method === 'GET') {
+    ArchivoController::listar();
+
+} elseif ($uri === '/api/archivo/examenes' && $method === 'POST') {
+    ArchivoController::crearExamen($input);
+
+} elseif ($uri === '/api/archivo/examenes' && $method === 'PUT') {
+    ArchivoController::actualizarExamen($input);
+
 } elseif ($uri === '/api/examenes' && $method === 'PUT') {
     HistoriaController::actualizarExamen($input);
 
@@ -271,12 +285,6 @@ if ($uri === '/' || $uri === '/api') {
 
 } elseif ($uri === '/api/presupuestos' && $method === 'POST') {
     FinanzaServicioController::crearPresupuesto($input);
-
-} elseif ($uri === '/api/presupuestos' && $method === 'POST') {
-    FinanzaServicioController::crearPresupuesto($input);
-
-} elseif (preg_match('#^/api/presupuestos/(\d+)/aprobar$#', $uri, $matches) && $method === 'POST') {
-    FinanzaServicioController::aprobarYCargarPresupuesto((int)$matches[1], $input);
 
 } elseif (preg_match('#^/api/presupuestos/(\d+)/aprobar$#', $uri, $matches) && $method === 'POST') {
     FinanzaServicioController::aprobarYCargarPresupuesto((int)$matches[1], $input);

@@ -10,7 +10,6 @@ try {
         // 1. TABLAS CATÁLOGO (NORMALIZACIÓN)
         // =========================================================================
 
-        // Estatus de Cita
         "CREATE TABLE IF NOT EXISTS `gm_estatus_cita` (
             `id` int(11) NOT NULL AUTO_INCREMENT,
             `nombre` varchar(50) NOT NULL,
@@ -29,7 +28,6 @@ try {
             ('Cancelada', 'cancelada', '#ef4444'),
             ('No Asistió', 'no_asistio', '#6b7280');",
 
-        // Estatus de Paciente
         "CREATE TABLE IF NOT EXISTS `gm_estatus_paciente` (
             `id` int(11) NOT NULL AUTO_INCREMENT,
             `nombre` varchar(50) NOT NULL,
@@ -45,7 +43,6 @@ try {
             ('Alta Médica', 'alta_medica'),
             ('Suspendido', 'suspendido');",
 
-        // Estatus de Historia Médica
         "CREATE TABLE IF NOT EXISTS `gm_estatus_historia` (
             `id` int(11) NOT NULL AUTO_INCREMENT,
             `nombre` varchar(50) NOT NULL,
@@ -61,7 +58,6 @@ try {
             ('Completada', 'completada'),
             ('Anulada', 'anulada');",
 
-        // Tipo de Usuario (Roles)
         "CREATE TABLE IF NOT EXISTS `gm_tipo_usuario` (
             `id` int(11) NOT NULL AUTO_INCREMENT,
             `nombre` varchar(50) NOT NULL,
@@ -76,7 +72,6 @@ try {
             ('Asistente', 'asistente'),
             ('Paciente', 'paciente');",
 
-        // Tipo de Identificación
         "CREATE TABLE IF NOT EXISTS `gm_tipo_identificacion` (
             `id` int(11) NOT NULL AUTO_INCREMENT,
             `codigo` varchar(10) NOT NULL,
@@ -92,7 +87,6 @@ try {
             ('J', 'Jurídico / RIF'),
             ('G', 'Gubernamental');",
 
-        // Especialidades Médicas
         "CREATE TABLE IF NOT EXISTS `gm_especialidades` (
             `id` int(11) NOT NULL AUTO_INCREMENT,
             `nombre` varchar(100) NOT NULL,
@@ -231,12 +225,16 @@ try {
 
         "CREATE TABLE IF NOT EXISTS `gm_historias_examenes` (
             `id` mediumint(9) NOT NULL AUTO_INCREMENT,
-            `historia_id` mediumint(9) NOT NULL,
+            `historia_id` mediumint(9) DEFAULT NULL,
+            `paciente_id` bigint(20) DEFAULT NULL,
+            `medico_id` bigint(20) DEFAULT NULL,
             `tipo_examen` varchar(150) NOT NULL,
             `descripcion_solicitud` text DEFAULT NULL,
+            `observaciones` text DEFAULT NULL,
             `resultado` text DEFAULT NULL,
             `estado_examen` varchar(50) DEFAULT 'Pendiente',
             `archivo_adjunto_url` varchar(255) DEFAULT NULL,
+            `fecha_examen` date DEFAULT NULL,
             `fecha_registro` datetime DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (`id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;",
@@ -303,6 +301,31 @@ try {
         $pdo->exec("ALTER TABLE `gm_citas` ADD COLUMN `total_usd` decimal(10,2) NOT NULL DEFAULT 0.00 AFTER `procedimiento`");
     }
 
+    // Asegurar soporte de exámenes independientes en gm_historias_examenes
+    $pdo->exec("ALTER TABLE `gm_historias_examenes` MODIFY COLUMN `historia_id` mediumint(9) DEFAULT NULL");
+    $colsExamenes = [
+        'paciente_id'   => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `paciente_id` bigint(20) DEFAULT NULL AFTER `historia_id`",
+        'medico_id'     => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `medico_id` bigint(20) DEFAULT NULL AFTER `paciente_id`",
+        'observaciones' => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `observaciones` text DEFAULT NULL AFTER `descripcion_solicitud`",
+        'fecha_examen'  => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `fecha_examen` date DEFAULT NULL AFTER `archivo_adjunto_url`",
+    ];
+    foreach ($colsExamenes as $col => $alterSql) {
+        $chk = $pdo->query("SHOW COLUMNS FROM `gm_historias_examenes` LIKE '$col'");
+        if ($chk && !$chk->fetch()) {
+            $pdo->exec($alterSql);
+        }
+    }
+
+    // Backfill de paciente_id y medico_id para exámenes ya asociados a historias previas
+    $pdo->exec("
+        UPDATE gm_historias_examenes e
+        INNER JOIN gm_historias_medicas h ON e.historia_id = h.id
+        SET e.paciente_id = COALESCE(e.paciente_id, h.paciente_id),
+            e.medico_id   = COALESCE(e.medico_id, h.medico_id)
+        WHERE e.historia_id IS NOT NULL AND e.historia_id > 0
+          AND (e.paciente_id IS NULL OR e.medico_id IS NULL)
+    ");
+
     // Poblar configuración inicial (Evolution API + Tokens de Diseño GinevApp)
     $stmtConfig = $pdo->prepare("INSERT INTO `gm_configuracion` (`clave`, `valor`, `descripcion`)
         VALUES (:clave, :valor, :descripcion)
@@ -332,7 +355,7 @@ try {
 
     echo json_encode([
         "status" => "success",
-        "mensaje" => "¡Todas las tablas del sistema médico, catálogos y configuración dinámica fueron creados y poblados exitosamente!"
+        "mensaje" => "¡Todas las tablas del sistema médico, catálogos, soporte de exámenes independientes y configuración dinámica fueron creados y actualizados exitosamente!"
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
 
 } catch (PDOException $e) {
