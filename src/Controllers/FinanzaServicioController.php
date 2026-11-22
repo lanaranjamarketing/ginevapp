@@ -614,6 +614,7 @@ class FinanzaServicioController {
             echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
         }
     }
+
     /**
      * GET /api/presupuestos?medico_id=X&estatus=todos|vigente|vencido|aprobado&fecha_desde=Y&fecha_hasta=Z
      */
@@ -680,7 +681,7 @@ class FinanzaServicioController {
 
     /**
      * POST /api/presupuestos/{id}/aprobar
-     * Carga el monto del presupuesto a la cuenta del paciente en gm_finanzas y cambia su estatus a 'aprobado'
+     * Carga el monto del presupuesto al DEBE y SALDO de la cuenta del paciente en gm_finanzas y cambia su estatus a 'aprobado'
      */
     public static function aprobarYCargarPresupuesto(int $presupuestoId, $input = null) {
         try {
@@ -690,6 +691,9 @@ class FinanzaServicioController {
 
             $pdo = Database::conectar();
             PresupuestoPdfGenerator::asegurarTablaPresupuestos($pdo);
+            if (class_exists(FacturaPdfGenerator::class)) {
+                FacturaPdfGenerator::asegurarColumnasFacturacion($pdo);
+            }
 
             $stmt = $pdo->prepare("SELECT * FROM gm_presupuestos WHERE id = :id LIMIT 1");
             $stmt->execute([':id' => $presupuestoId]);
@@ -726,23 +730,25 @@ class FinanzaServicioController {
             $numPres = !empty($pres['numero_presupuesto']) ? $pres['numero_presupuesto'] : str_pad((string)$presupuestoId, 6, '0', STR_PAD_LEFT);
             $conceptoFinal = "Presupuesto N° {$numPres}: " . implode(', ', $partesConcepto);
 
-            $debeUsd = (float)($pres['total_usd'] ?? 0);
+            $debeUsd = round((float)($pres['total_usd'] ?? 0), 2);
             $debeBs  = round($debeUsd * $tasaBcv, 2);
 
-            // Insertar cargo en gm_finanzas
+            // Insertar cargo en gm_finanzas reflejando debe, saldo, debe_bs y saldo_bs
             $insFin = $pdo->prepare("
                 INSERT INTO gm_finanzas
-                (medico_id, paciente_id, fecha, concepto, debe, haber, debe_bs, haber_bs, tasa_bcv, facturado)
+                (medico_id, paciente_id, fecha, concepto, debe, haber, saldo, debe_bs, haber_bs, saldo_bs, tasa_bcv, facturado)
                 VALUES
-                (:med, :pac, CURDATE(), :conc, :debe, 0.00, :debe_bs, 0.00, :tasa, 0)
+                (:med, :pac, CURDATE(), :conc, :debe, 0.00, :saldo, :debe_bs, 0.00, :saldo_bs, :tasa, 0)
             ");
             $insFin->execute([
-                ':med'     => (int)$pres['medico_id'],
-                ':pac'     => $pacienteId,
-                ':conc'    => $conceptoFinal,
-                ':debe'    => $debeUsd,
-                ':debe_bs' => $debeBs,
-                ':tasa'    => $tasaBcv,
+                ':med'      => (int)$pres['medico_id'],
+                ':pac'      => $pacienteId,
+                ':conc'     => $conceptoFinal,
+                ':debe'     => $debeUsd,
+                ':saldo'    => $debeUsd,
+                ':debe_bs'  => $debeBs,
+                ':saldo_bs' => $debeBs,
+                ':tasa'     => $tasaBcv,
             ]);
             $finanzaId = (int)$pdo->lastInsertId();
 
