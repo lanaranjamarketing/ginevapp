@@ -272,6 +272,9 @@ if ($uri === '/' || $uri === '/api') {
 } elseif ($uri === '/api/presupuestos' && $method === 'POST') {
     FinanzaServicioController::crearPresupuesto($input);
 
+} elseif (preg_match('#^/api/presupuestos/(\d+)/aprobar$#', $uri, $matches) && $method === 'POST') {
+    FinanzaServicioController::aprobarYCargarPresupuesto((int)$matches[1], $input);
+
 } elseif (($uri === '/validar-presupuesto' || $uri === '/api/validar-presupuesto') && $method === 'GET') {
     if (ob_get_length()) {
         ob_clean();

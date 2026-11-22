@@ -615,7 +615,7 @@ class FinanzaServicioController {
         }
     }
     /**
-     * GET /api/presupuestos?medico_id=X&estatus=todos|vigente|vencido&fecha_desde=Y&fecha_hasta=Z
+     * GET /api/presupuestos?medico_id=X&estatus=todos|vigente|vencido|aprobado&fecha_desde=Y&fecha_hasta=Z
      */
     public static function listarPresupuestos() {
         try {
@@ -639,16 +639,22 @@ class FinanzaServicioController {
             }
 
             $estatus = strtolower(trim((string)($_GET['estatus'] ?? '')));
-            if ($estatus === 'vigente') {
-                $condiciones[] = "CURDATE() <= fecha_vencimiento";
+            if ($estatus === 'aprobado') {
+                $condiciones[] = "estatus = 'aprobado'";
+            } elseif ($estatus === 'vigente') {
+                $condiciones[] = "estatus <> 'aprobado' AND CURDATE() <= fecha_vencimiento";
             } elseif ($estatus === 'vencido') {
-                $condiciones[] = "CURDATE() > fecha_vencimiento";
+                $condiciones[] = "estatus <> 'aprobado' AND CURDATE() > fecha_vencimiento";
             }
 
             $whereSql = implode(" AND ", $condiciones);
             $stmt = $pdo->prepare("
                 SELECT *,
-                       IF(CURDATE() <= fecha_vencimiento, 'vigente', 'vencido') AS estatus_vigencia
+                       CASE
+                           WHEN estatus = 'aprobado' THEN 'aprobado'
+                           WHEN CURDATE() <= fecha_vencimiento THEN 'vigente'
+                           ELSE 'vencido'
+                       END AS estatus_calculado
                 FROM gm_presupuestos
                 WHERE $whereSql
                 ORDER BY id DESC
@@ -664,6 +670,98 @@ class FinanzaServicioController {
                 "status" => "success",
                 "total"  => count($lista),
                 "data"   => $lista
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * POST /api/presupuestos/{id}/aprobar
+     * Carga el monto del presupuesto a la cuenta del paciente en gm_finanzas y cambia su estatus a 'aprobado'
+     */
+    public static function aprobarYCargarPresupuesto(int $presupuestoId, $input = null) {
+        try {
+            if ($input === null) {
+                $input = json_decode(file_get_contents('php://input'), true) ?: [];
+            }
+
+            $pdo = Database::conectar();
+            PresupuestoPdfGenerator::asegurarTablaPresupuestos($pdo);
+
+            $stmt = $pdo->prepare("SELECT * FROM gm_presupuestos WHERE id = :id LIMIT 1");
+            $stmt->execute([':id' => $presupuestoId]);
+            $pres = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$pres) {
+                http_response_code(404);
+                echo json_encode(["status" => "error", "mensaje" => "Presupuesto no encontrado."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            if (($pres['estatus'] ?? '') === 'aprobado') {
+                echo json_encode(["status" => "success", "mensaje" => "Este presupuesto ya fue aprobado y cargado anteriormente."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pacienteId = (int)($input['paciente_id'] ?? $pres['paciente_id'] ?? 0);
+            if ($pacienteId <= 0) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "El presupuesto debe estar asociado a un paciente registrado para cargarlo a cuenta."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $tasaVal = $pdo->query("SELECT tasa_usd FROM gm_tasa_bcv ORDER BY fecha DESC LIMIT 1")->fetchColumn();
+            $tasaBcv = !empty($input['tasa_bcv']) ? (float)$input['tasa_bcv'] : (($tasaVal && (float)$tasaVal > 0) ? (float)$tasaVal : (float)($pres['tasa_bcv'] ?? 1.0));
+
+            $items = json_decode((string)($pres['items_json'] ?? '[]'), true) ?: [];
+            $partesConcepto = [];
+            foreach ($items as $it) {
+                $cant = max(1, (int)($it['cantidad'] ?? 1));
+                $nom  = trim((string)($it['nombre'] ?? 'Servicio'));
+                $partesConcepto[] = "{$cant}x {$nom}";
+            }
+            $numPres = !empty($pres['numero_presupuesto']) ? $pres['numero_presupuesto'] : str_pad((string)$presupuestoId, 6, '0', STR_PAD_LEFT);
+            $conceptoFinal = "Presupuesto N° {$numPres}: " . implode(', ', $partesConcepto);
+
+            $debeUsd = (float)($pres['total_usd'] ?? 0);
+            $debeBs  = round($debeUsd * $tasaBcv, 2);
+
+            // Insertar cargo en gm_finanzas
+            $insFin = $pdo->prepare("
+                INSERT INTO gm_finanzas
+                (medico_id, paciente_id, fecha, concepto, debe, haber, debe_bs, haber_bs, tasa_bcv, facturado)
+                VALUES
+                (:med, :pac, CURDATE(), :conc, :debe, 0.00, :debe_bs, 0.00, :tasa, 0)
+            ");
+            $insFin->execute([
+                ':med'     => (int)$pres['medico_id'],
+                ':pac'     => $pacienteId,
+                ':conc'    => $conceptoFinal,
+                ':debe'    => $debeUsd,
+                ':debe_bs' => $debeBs,
+                ':tasa'    => $tasaBcv,
+            ]);
+            $finanzaId = (int)$pdo->lastInsertId();
+
+            // Marcar presupuesto como APROBADO
+            $updPres = $pdo->prepare("
+                UPDATE gm_presupuestos
+                SET estatus = 'aprobado', paciente_id = :pac, finanza_id = :fid
+                WHERE id = :id
+            ");
+            $updPres->execute([
+                ':pac' => $pacienteId,
+                ':fid' => $finanzaId,
+                ':id'  => $presupuestoId,
+            ]);
+
+            echo json_encode([
+                "status"     => "success",
+                "mensaje"    => "Presupuesto N° {$numPres} aprobado y cargado a la cuenta del paciente.",
+                "finanza_id" => $finanzaId
             ], JSON_UNESCAPED_UNICODE);
 
         } catch (Exception $e) {

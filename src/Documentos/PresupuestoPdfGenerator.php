@@ -55,7 +55,7 @@ class PresupuestoPdfGenerator {
         return 'CARACAS';
     }
 
-    public static function asegurarTablaPresupuestos(PDO $pdo): void {
+   public static function asegurarTablaPresupuestos(PDO $pdo): void {
         try {
             $pdo->exec("
                 CREATE TABLE IF NOT EXISTS gm_presupuestos (
@@ -74,12 +74,23 @@ class PresupuestoPdfGenerator {
                     total_bs DECIMAL(14,2) NOT NULL DEFAULT 0.00,
                     tasa_bcv DECIMAL(12,4) NOT NULL DEFAULT 1.0000,
                     observaciones TEXT NULL,
+                    estatus VARCHAR(20) NOT NULL DEFAULT 'pendiente',
+                    finanza_id INT NULL,
                     url_pdf VARCHAR(500) NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     INDEX idx_medico_fecha (medico_id, fecha_emision),
                     INDEX idx_vencimiento (fecha_vencimiento)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             ");
+
+            // Migración automática si la tabla ya existía sin estatus o finanza_id
+            $cols = $pdo->query("SHOW COLUMNS FROM gm_presupuestos")->fetchAll(PDO::FETCH_COLUMN);
+            if (!in_array('estatus', $cols, true)) {
+                $pdo->exec("ALTER TABLE gm_presupuestos ADD COLUMN estatus VARCHAR(20) NOT NULL DEFAULT 'pendiente'");
+            }
+            if (!in_array('finanza_id', $cols, true)) {
+                $pdo->exec("ALTER TABLE gm_presupuestos ADD COLUMN finanza_id INT NULL");
+            }
         } catch (Exception $ignored) {}
     }
 
