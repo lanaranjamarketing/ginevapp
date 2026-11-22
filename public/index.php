@@ -47,6 +47,7 @@ register_shutdown_function(function () {
 require_once __DIR__ . '/../src/Config/Database.php';
 require_once __DIR__ . '/../src/Documentos/InformeMedicoPdfGenerator.php';
 require_once __DIR__ . '/../src/Documentos/ValidadorInformePublico.php';
+require_once __DIR__ . '/../src/Documentos/FacturaPdfGenerator.php';
 require_once __DIR__ . '/../src/Controllers/CatalogoController.php';
 require_once __DIR__ . '/../src/Controllers/PacienteController.php';
 require_once __DIR__ . '/../src/Controllers/PacientePerfilController.php';
@@ -67,6 +68,7 @@ use App\Controllers\HistoriaController;
 use App\Controllers\FinanzaServicioController;
 use App\Controllers\AjustesMedicoController;
 use App\Documentos\ValidadorInformePublico;
+use App\Documentos\FacturaPdfGenerator;
 
 $rawUri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?: '/';
 $uri = ($rawUri !== '/' && substr($rawUri, -1) === '/') ? rtrim($rawUri, '/') : $rawUri;
@@ -117,6 +119,10 @@ if ($uri === '/' || $uri === '/api') {
             "GET /api/tasa-bcv/sincronizar",
             "GET /api/finanzas",
             "POST /api/finanzas",
+            "POST /api/finanzas/egreso",
+            "POST /api/finanzas/eliminar-egresos",
+            "POST /api/finanzas/facturar",
+            "GET /validar-factura",
             "GET /api/medico/ajustes",
             "POST /api/medico/perfil",
             "POST /api/medico/calendarios",
@@ -218,6 +224,9 @@ if ($uri === '/' || $uri === '/api') {
     HistoriaController::imprimirPdf();
 
 } elseif (($uri === '/validar-informe' || $uri === '/api/validar-informe') && $method === 'GET') {
+    if (ob_get_length()) {
+        ob_clean();
+    }
     ValidadorInformePublico::renderizar();
 
 } elseif ($uri === '/api/servicios' && $method === 'GET') {
@@ -246,6 +255,21 @@ if ($uri === '/' || $uri === '/api') {
 
 } elseif ($uri === '/api/finanzas' && $method === 'POST') {
     FinanzaServicioController::registrarMovimiento($input);
+
+} elseif ($uri === '/api/finanzas/egreso' && $method === 'POST') {
+    FinanzaServicioController::registrarEgreso($input);
+
+} elseif ($uri === '/api/finanzas/eliminar-egresos' && $method === 'POST') {
+    FinanzaServicioController::eliminarEgresos($input);
+
+} elseif ($uri === '/api/finanzas/facturar' && $method === 'POST') {
+    FinanzaServicioController::facturarMovimiento($input);
+
+} elseif (($uri === '/validar-factura' || $uri === '/api/validar-factura') && $method === 'GET') {
+    if (ob_get_length()) {
+        ob_clean();
+    }
+    FacturaPdfGenerator::renderizarValidadorPublico();
 
 } elseif ($uri === '/api/medico/ajustes' && $method === 'GET') {
     AjustesMedicoController::obtenerTodo();

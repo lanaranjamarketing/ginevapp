@@ -2,6 +2,7 @@
 namespace App\Controllers;
 
 use App\Config\Database;
+use App\Documentos\FacturaPdfGenerator;
 use PDO;
 use Exception;
 
@@ -262,11 +263,15 @@ class FinanzaServicioController {
     }
 
     /**
-     * GET /api/finanzas?medico_id=X&paciente_id=Y
+     * GET /api/finanzas?medico_id=X&paciente_id=Y&filtro_tipo=dia|mes|custom
      */
     public static function listarFinanzas() {
         try {
             $pdo = Database::conectar();
+            if (class_exists(FacturaPdfGenerator::class)) {
+                FacturaPdfGenerator::asegurarColumnasFacturacion($pdo);
+            }
+
             $condiciones = ["1=1"];
             $params = [];
 
@@ -277,6 +282,19 @@ class FinanzaServicioController {
             if (!empty($_GET['paciente_id'])) {
                 $condiciones[] = "f.paciente_id = :pac";
                 $params[':pac'] = (int)$_GET['paciente_id'];
+            }
+
+            $filtroTipo = trim((string)($_GET['filtro_tipo'] ?? ''));
+            if ($filtroTipo === 'dia' && !empty($_GET['fecha_dia'])) {
+                $condiciones[] = "f.fecha = :fecha_dia";
+                $params[':fecha_dia'] = trim((string)$_GET['fecha_dia']);
+            } elseif ($filtroTipo === 'mes' && !empty($_GET['mes_sel'])) {
+                $condiciones[] = "DATE_FORMAT(f.fecha, '%Y-%m') = :mes_sel";
+                $params[':mes_sel'] = trim((string)$_GET['mes_sel']);
+            } elseif ($filtroTipo === 'custom' && !empty($_GET['f_inicio']) && !empty($_GET['f_fin'])) {
+                $condiciones[] = "f.fecha BETWEEN :f_inicio AND :f_fin";
+                $params[':f_inicio'] = trim((string)$_GET['f_inicio']);
+                $params[':f_fin']    = trim((string)$_GET['f_fin']);
             }
 
             $whereSql = implode(" AND ", $condiciones);
@@ -296,17 +314,25 @@ class FinanzaServicioController {
 
             $totalDebeUsd  = 0;
             $totalHaberUsd = 0;
+            $totalDebeBs   = 0;
+            $totalHaberBs  = 0;
+
             foreach ($movimientos as $m) {
                 $totalDebeUsd  += (float)$m['debe'];
                 $totalHaberUsd += (float)$m['haber'];
+                $totalDebeBs   += (float)($m['debe_bs'] ?? 0);
+                $totalHaberBs  += (float)($m['haber_bs'] ?? 0);
             }
 
             echo json_encode([
                 "status" => "success",
                 "resumen" => [
-                    "total_cargos_usd" => round($totalDebeUsd, 2),
-                    "total_abonos_usd" => round($totalHaberUsd, 2),
-                    "saldo_pendiente_usd" => round($totalDebeUsd - $totalHaberUsd, 2)
+                    "total_cargos_usd"    => round($totalDebeUsd, 2),
+                    "total_abonos_usd"    => round($totalHaberUsd, 2),
+                    "saldo_pendiente_usd" => round($totalDebeUsd - $totalHaberUsd, 2),
+                    "total_debe_bs"       => round($totalDebeBs, 2),
+                    "total_haber_bs"      => round($totalHaberBs, 2),
+                    "saldo_neto_bs"       => round($totalDebeBs - $totalHaberBs, 2)
                 ],
                 "total" => count($movimientos),
                 "data"  => $movimientos
@@ -372,6 +398,144 @@ class FinanzaServicioController {
                 "status"  => "success",
                 "mensaje" => "Movimiento financiero registrado correctamente.",
                 "id"      => $pdo->lastInsertId()
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * POST /api/finanzas/egreso
+     * Registro rápido de salida de dinero / gastos operativos en USD o BS
+     */
+    public static function registrarEgreso($input = null) {
+        try {
+            if ($input === null) {
+                $input = json_decode(file_get_contents('php://input'), true) ?: [];
+            }
+
+            $medicoId = (int)($input['medico_id'] ?? 0);
+            $concepto = trim((string)($input['concepto'] ?? ''));
+            $monto    = (float)($input['monto'] ?? 0);
+            $moneda   = strtoupper(trim((string)($input['moneda'] ?? 'USD')));
+
+            if ($medicoId <= 0 || $concepto === '' || $monto <= 0) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "Médico, concepto y monto válido son obligatorios."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo = Database::conectar();
+            $tasaVal = $pdo->query("SELECT tasa_usd FROM gm_tasa_bcv ORDER BY fecha DESC LIMIT 1")->fetchColumn();
+            $tasa = ($tasaVal && (float)$tasaVal > 0) ? (float)$tasaVal : 1.0000;
+
+            if ($moneda === 'BS' || $moneda === 'VES') {
+                $haberBs  = round($monto, 2);
+                $haberUsd = round($haberBs / $tasa, 2);
+            } else {
+                $haberUsd = round($monto, 2);
+                $haberBs  = round($haberUsd * $tasa, 2);
+            }
+
+            $sql = "INSERT INTO gm_finanzas 
+                    (medico_id, paciente_id, historia_id, fecha, concepto, debe, haber, saldo, debe_bs, haber_bs, saldo_bs, tasa_bcv)
+                    VALUES (:med, 0, NULL, CURDATE(), :con, 0.00, :haber, :saldo, 0.00, :haber_bs, :saldo_bs, :tasa)";
+            $pdo->prepare($sql)->execute([
+                ':med'      => $medicoId,
+                ':con'      => '[EGRESO] ' . mb_substr($concepto, 0, 200),
+                ':haber'    => $haberUsd,
+                ':saldo'    => -$haberUsd,
+                ':haber_bs' => $haberBs,
+                ':saldo_bs' => -$haberBs,
+                ':tasa'     => $tasa,
+            ]);
+
+            http_response_code(201);
+            echo json_encode([
+                "status"  => "success",
+                "mensaje" => "Egreso registrado exitosamente en Dólares y Bolívares.",
+                "id"      => $pdo->lastInsertId()
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * POST /api/finanzas/eliminar-egresos
+     * Eliminación múltiple de egresos seleccionados
+     */
+    public static function eliminarEgresos($input = null) {
+        try {
+            if ($input === null) {
+                $input = json_decode(file_get_contents('php://input'), true) ?: [];
+            }
+
+            $medicoId = (int)($input['medico_id'] ?? 0);
+            $ids = is_array($input['ids'] ?? null) ? array_values(array_filter(array_map('intval', $input['ids']))) : [];
+
+            if ($medicoId <= 0 || empty($ids)) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "Debe seleccionar al menos un egreso."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo = Database::conectar();
+            $placeholders = implode(',', array_fill(0, count($ids), '?'));
+            $params = array_merge([$medicoId], $ids);
+
+            $stmt = $pdo->prepare("DELETE FROM gm_finanzas WHERE medico_id = ? AND id IN ($placeholders) AND (haber > 0 OR concepto LIKE '%[EGRESO]%')");
+            $stmt->execute($params);
+
+            echo json_encode([
+                "status"     => "success",
+                "eliminados" => $stmt->rowCount(),
+                "mensaje"    => "Se eliminaron " . $stmt->rowCount() . " egreso(s) seleccionado(s) correctamente."
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * POST /api/finanzas/facturar
+     * Emite la Factura Serie A digital, marca facturado = 1 y devuelve la URL del documento
+     */
+    public static function facturarMovimiento($input = null) {
+        try {
+            if ($input === null) {
+                $input = json_decode(file_get_contents('php://input'), true) ?: [];
+            }
+
+            $finanzaId = (int)($input['finanza_id'] ?? $input['id'] ?? 0);
+            if ($finanzaId <= 0) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "ID de transacción inválido."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $temaOverride = [
+                'color_primario' => $input['color_primario'] ?? null,
+            ];
+
+            $gen = FacturaPdfGenerator::generarFacturaPdf($finanzaId, null, $temaOverride);
+            if (empty($gen['url'])) {
+                http_response_code(404);
+                echo json_encode(["status" => "error", "mensaje" => "No se pudo generar la factura para este registro."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            echo json_encode([
+                "status"          => "success",
+                "mensaje"         => "Factura Serie A N° " . $gen['numero_factura'] . " generada correctamente.",
+                "numero_factura"  => $gen['numero_factura'],
+                "url_factura_pdf" => $gen['url']
             ], JSON_UNESCAPED_UNICODE);
 
         } catch (Exception $e) {
