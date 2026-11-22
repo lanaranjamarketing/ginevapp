@@ -45,6 +45,8 @@ register_shutdown_function(function () {
 });
 
 require_once __DIR__ . '/../src/Config/Database.php';
+require_once __DIR__ . '/../src/Documentos/InformeMedicoPdfGenerator.php';
+require_once __DIR__ . '/../src/Documentos/ValidadorInformePublico.php';
 require_once __DIR__ . '/../src/Controllers/CatalogoController.php';
 require_once __DIR__ . '/../src/Controllers/PacienteController.php';
 require_once __DIR__ . '/../src/Controllers/PacientePerfilController.php';
@@ -103,6 +105,8 @@ if ($uri === '/' || $uri === '/api') {
             "GET /api/historias",
             "GET /api/historias/antecedentes",
             "POST /api/historias",
+            "GET /api/historias/pdf",
+            "GET /validar-informe",
             "PUT /api/examenes",
             "GET /api/servicios",
             "POST /api/servicios",
@@ -213,14 +217,11 @@ if ($uri === '/' || $uri === '/api') {
 } elseif ($uri === '/api/historias/pdf' && $method === 'GET') {
     HistoriaController::imprimirPdf();
 
-    } elseif (($uri === '/validar-informe' || $uri === '/validar-informe/' || $uri === '/api/validar-informe') && $method === 'GET') {
+} elseif (($uri === '/validar-informe' || $uri === '/api/validar-informe') && $method === 'GET') {
     ValidadorInformePublico::renderizar();
 
 } elseif ($uri === '/api/servicios' && $method === 'GET') {
     FinanzaServicioController::listarServicios();
-  
-} elseif ($uri === '/api/historias/pdf' && $method === 'GET') {
-    HistoriaController::imprimirPdf();
 
 } elseif ($uri === '/api/servicios' && $method === 'POST') {
     FinanzaServicioController::crearServicio($input);
