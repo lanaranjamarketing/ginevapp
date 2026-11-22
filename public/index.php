@@ -272,6 +272,12 @@ if ($uri === '/' || $uri === '/api') {
 } elseif ($uri === '/api/presupuestos' && $method === 'POST') {
     FinanzaServicioController::crearPresupuesto($input);
 
+} elseif ($uri === '/api/presupuestos' && $method === 'POST') {
+    FinanzaServicioController::crearPresupuesto($input);
+
+} elseif (preg_match('#^/api/presupuestos/(\d+)/aprobar$#', $uri, $matches) && $method === 'POST') {
+    FinanzaServicioController::aprobarYCargarPresupuesto((int)$matches[1], $input);
+
 } elseif (preg_match('#^/api/presupuestos/(\d+)/aprobar$#', $uri, $matches) && $method === 'POST') {
     FinanzaServicioController::aprobarYCargarPresupuesto((int)$matches[1], $input);
 
