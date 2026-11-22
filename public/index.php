@@ -57,6 +57,7 @@ require_once __DIR__ . '/../src/Controllers/CitaController.php';
 require_once __DIR__ . '/../src/Controllers/HistoriaController.php';
 require_once __DIR__ . '/../src/Controllers/FinanzaServicioController.php';
 require_once __DIR__ . '/../src/Controllers/AjustesMedicoController.php';
+require_once __DIR__ . '/../src/Documentos/PresupuestoPdfGenerator.php';
 
 use App\Controllers\CatalogoController;
 use App\Controllers\PacienteController;
@@ -264,6 +265,18 @@ if ($uri === '/' || $uri === '/api') {
 
 } elseif ($uri === '/api/finanzas/facturar' && $method === 'POST') {
     FinanzaServicioController::facturarMovimiento($input);
+
+} elseif ($uri === '/api/presupuestos' && $method === 'GET') {
+    FinanzaServicioController::listarPresupuestos();
+
+} elseif ($uri === '/api/presupuestos' && $method === 'POST') {
+    FinanzaServicioController::crearPresupuesto($input);
+
+} elseif (($uri === '/validar-presupuesto' || $uri === '/api/validar-presupuesto') && $method === 'GET') {
+    if (ob_get_length()) {
+        ob_clean();
+    }
+    \App\Documentos\PresupuestoPdfGenerator::renderizarValidadorPublico();
 
 } elseif (($uri === '/validar-factura' || $uri === '/api/validar-factura') && $method === 'GET') {
     if (ob_get_length()) {
