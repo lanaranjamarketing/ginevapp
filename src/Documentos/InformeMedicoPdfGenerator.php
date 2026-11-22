@@ -8,10 +8,10 @@ use Exception;
 
 class InformeMedicoPdfGenerator {
 
-    private static function columnaExiste(PDO $pdo, string $tabla, string$columna): bool {
+    private static function columnaExiste(PDO $pdo, string $tabla, string $columna): bool {
         try {
-            $stmt =$pdo->prepare("SHOW COLUMNS FROM `$tabla` LIKE :col");
-            $stmt->execute([':col' =>$columna]);
+            $stmt = $pdo->prepare("SHOW COLUMNS FROM `$tabla` LIKE :col");
+            $stmt->execute([':col' => $columna]);
             return (bool)$stmt->fetch(PDO::FETCH_ASSOC);
         } catch (Exception $e) {
             return false;
@@ -23,12 +23,12 @@ class InformeMedicoPdfGenerator {
         if (!empty($envUrl)) {
             return rtrim($envUrl, '/');
         }
-        $proto = (!empty($_SERVER['HTTPS']) &&$_SERVER['HTTPS'] !== 'off')
+        $proto = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
             || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https')
             ? 'https'
             : 'http';
-        $host =$_SERVER['HTTP_HOST'] ?? 'api.ginevapp.com';
-        return $proto . '://' .$host;
+        $host = $_SERVER['HTTP_HOST'] ?? 'api.ginevapp.com';
+        return $proto . '://' . $host;
     }
 
     private static function formatearFechaEs(?string $fechaRaw): string {
@@ -40,32 +40,33 @@ class InformeMedicoPdfGenerator {
             return $fechaRaw;
         }
         $meses = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
-        $m = (int)date('n',$ts) - 1;
+        $m = (int)date('n', $ts) - 1;
         return date('d', $ts) . ' ' . ($meses[$m] ?? date('M', $ts)) . ' ' . date('Y', $ts);
     }
 
-    private static function normalizarHexColor(?string $color, string$fallback): string {
+    private static function normalizarHexColor(?string $color, string $fallback): string {
         $c = trim((string)($color ?? ''));
-        if ($c === '') return$fallback;
+        if ($c === '') return $fallback;
         if ($c[0] !== '#') $c = '#' . $c;
-        return preg_match('/^#[0-9a-fA-F]{6}$/',$c) ? $c :$fallback;
+        return preg_match('/^#[0-9a-fA-F]{6}$/', $c) ? $c : $fallback;
     }
 
-    private static function oscurecerHex(string $hex, float$factor = 0.72): string {
+    private static function oscurecerHex(string $hex, float $factor = 0.72): string {
         $hex = ltrim($hex, '#');
-        if (strlen($hex) !== 6) return '#005959';
-        $r = max(0, min(255, (int)round(hexdec(substr($hex, 0, 2)) *$factor)));
-        $g = max(0, min(255, (int)round(hexdec(substr($hex, 2, 2)) * $factor)));$b = max(0, min(255, (int)round(hexdec(substr($hex, 4, 2)) *$factor)));
-        return sprintf('#%02x%02x%02x', $r, $g,$b);
+        if (strlen($hex) !== 6) return '#880e4f';
+        $r = max(0, min(255, (int)round(hexdec(substr($hex, 0, 2)) * $factor)));
+        $g = max(0, min(255, (int)round(hexdec(substr($hex, 2, 2)) * $factor)));
+        $b = max(0, min(255, (int)round(hexdec(substr($hex, 4, 2)) * $factor)));
+        return sprintf('#%02x%02x%02x', $r, $g, $b);
     }
 
-    private static function aclararHex(string $hex, float$mezcla = 0.92): string {
+    private static function aclararHex(string $hex, float $mezcla = 0.92): string {
         $hex = ltrim($hex, '#');
-        if (strlen($hex) !== 6) return '#f0fdfd';
+        if (strlen($hex) !== 6) return '#fdf2f8';
         $r = (int)round(hexdec(substr($hex, 0, 2)) * (1 - $mezcla) + 255 * $mezcla);
         $g = (int)round(hexdec(substr($hex, 2, 2)) * (1 - $mezcla) + 255 * $mezcla);
         $b = (int)round(hexdec(substr($hex, 4, 2)) * (1 - $mezcla) + 255 * $mezcla);
-        return sprintf('#%02x%02x%02x', $r, $g,$b);
+        return sprintf('#%02x%02x%02x', $r, $g, $b);
     }
 
     /**
@@ -132,16 +133,29 @@ class InformeMedicoPdfGenerator {
             $medicoRif = 'S/N';
         }
 
-        // Colores dinámicos según la configuración de tema/diseño del médico
+        // Colores dinámicos según la configuración de tema/diseño del médico o configuración global
+        $cfgColorPrimario = null;
+        $cfgColorSecundario = null;
+        try {
+            $stmtCfg = $pdo->query("SELECT * FROM gm_configuracion LIMIT 1");
+            $cfg = $stmtCfg ? $stmtCfg->fetch(PDO::FETCH_ASSOC) : null;
+            if ($cfg) {
+                $cfgColorPrimario = $cfg['color_primario'] ?? null;
+                $cfgColorSecundario = $cfg['color_secundario'] ?? null;
+            }
+        } catch (Exception $ignored) {}
+
         $colorPrimarioRaw = $temaOverride['color_primario']
             ?? $medExt['color_primario']
             ?? $medExt['theme_primary']
-            ?? '#008080';
-        $colorPrimario = self::normalizarHexColor($colorPrimarioRaw, '#008080');
+            ?? $cfgColorPrimario
+            ?? '#B81D65';
+        $colorPrimario = self::normalizarHexColor($colorPrimarioRaw, '#B81D65');
 
         $colorOscuroRaw = $temaOverride['color_secundario']
             ?? $medExt['color_secundario']
             ?? $medExt['theme_dark']
+            ?? $cfgColorSecundario
             ?? '';
         $colorOscuro = !empty($colorOscuroRaw)
             ? self::normalizarHexColor($colorOscuroRaw, self::oscurecerHex($colorPrimario))
@@ -197,7 +211,9 @@ class InformeMedicoPdfGenerator {
         }
 
         $baseUrl       = self::baseUrlPublica();
-        $urlValidacion = $baseUrl . '/validar-informe?hash=' . urlencode($hashVal);
+        $urlValidacion = $baseUrl . '/validar-informe?hash=' . urlencode($hashVal)
+            . '&cp=' . urlencode($colorPrimario)
+            . '&cs=' . urlencode($colorOscuro);
         $apiQrUrl      = 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=' . urlencode($urlValidacion);
 
         // Lista de exámenes dinámicos
