@@ -8,43 +8,108 @@ use Exception;
 class CitaController {
 
     /**
-     * Calcula el monto total en USD cruzando la lista de servicios seleccionados
-     * (separados por coma) contra el catálogo gm_servicios del médico.
+     * Desglosa los servicios seleccionados en una cita (desde el texto 'procedimiento'
+     * o un arreglo 'servicios') y obtiene su precio real en gm_servicios.
      */
-    private static function calcularMontoServicios(PDO $pdo, int $medicoId, string $procedimiento): float {
-        $procedimiento = trim($procedimiento);
-        if ($procedimiento === '' || $medicoId <= 0) {
-            return 0.00;
+    private static function resolverServiciosCita(PDO $pdo, int $medicoId, string $procedimiento, $serviciosInput = null): array {
+        $itemsNombres = [];
+
+        if (is_string($serviciosInput) && trim($serviciosInput) !== '') {
+            $decoded = json_decode($serviciosInput, true);
+            if (is_array($decoded)) {
+                $serviciosInput = $decoded;
+            }
         }
 
-        $items = array_filter(array_map('trim', explode(',', $procedimiento)));
-        if (empty($items)) {
-            return 0.00;
+        if (is_array($serviciosInput) && !empty($serviciosInput)) {
+            foreach ($serviciosInput as $srv) {
+                if (is_string($srv) && trim($srv) !== '') {
+                    $itemsNombres[] = trim($srv);
+                } elseif (is_array($srv)) {
+                    $nom = trim((string)($srv['nombre_servicio'] ?? $srv['nombre'] ?? $srv['titulo'] ?? ''));
+                    if ($nom !== '') {
+                        $itemsNombres[] = $nom;
+                    }
+                }
+            }
+        }
+
+        if (empty($itemsNombres) && trim($procedimiento) !== '') {
+            $partes = preg_split('/\s*(?:,|\+|\||;)\s*/', trim($procedimiento)) ?: [];
+            foreach ($partes as $p) {
+                $p = trim($p);
+                if ($p !== '') {
+                    $itemsNombres[] = $p;
+                }
+            }
+        }
+
+        if (empty($itemsNombres) || $medicoId <= 0) {
+            return ['servicios' => [], 'total' => 0.00];
         }
 
         $stmt = $pdo->prepare("
-            SELECT precio 
+            SELECT id, nombre_servicio, precio 
             FROM gm_servicios 
             WHERE medico_id = :med 
               AND TRIM(LOWER(nombre_servicio)) = TRIM(LOWER(:nombre)) 
             LIMIT 1
         ");
 
-        $total = 0.00;
-        foreach ($items as $nombreServicio) {
-            // Si el texto trae un sufijo entre paréntesis con precio, limpiarlo para buscar el nombre exacto
-            $nombreLimpio = preg_replace('/\s*\(\$\s*[0-9.,]+\)\s*$/', '', $nombreServicio);
+        $detalle = [];
+        $total   = 0.00;
+
+        foreach ($itemsNombres as $rawItem) {
+            $precioInline = null;
+            if (preg_match('/\(\$\s*([0-9]+(?:[.,][0-9]+)?)\)\s*$/', $rawItem, $m)) {
+                $precioInline = (float)str_replace(',', '.', $m[1]);
+            }
+            $nombreLimpio = trim((string)preg_replace('/\s*\(\$\s*[0-9.,]+\)\s*$/', '', $rawItem));
+            if ($nombreLimpio === '') {
+                continue;
+            }
+
             $stmt->execute([
                 ':med'    => $medicoId,
-                ':nombre' => trim($nombreLimpio)
+                ':nombre' => $nombreLimpio
             ]);
-            $precio = $stmt->fetchColumn();
-            if ($precio !== false) {
-                $total += (float)$precio;
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($row) {
+                $precio = (float)$row['precio'];
+                $total += $precio;
+                $detalle[] = [
+                    'id'              => (int)$row['id'],
+                    'nombre_servicio' => $row['nombre_servicio'],
+                    'nombre'          => $row['nombre_servicio'],
+                    'precio'          => number_format($precio, 2, '.', ''),
+                    'precio_usd'      => number_format($precio, 2, '.', ''),
+                ];
+            } elseif ($precioInline !== null && $precioInline > 0) {
+                $total += $precioInline;
+                $detalle[] = [
+                    'id'              => 0,
+                    'nombre_servicio' => $nombreLimpio,
+                    'nombre'          => $nombreLimpio,
+                    'precio'          => number_format($precioInline, 2, '.', ''),
+                    'precio_usd'      => number_format($precioInline, 2, '.', ''),
+                ];
             }
         }
 
-        return round($total, 2);
+        return [
+            'servicios' => $detalle,
+            'total'     => round($total, 2),
+        ];
+    }
+
+    /**
+     * Calcula el monto total en USD cruzando la lista de servicios seleccionados
+     * contra el catálogo gm_servicios del médico.
+     */
+    private static function calcularMontoServicios(PDO $pdo, int $medicoId, string $procedimiento, $serviciosInput = null): float {
+        $res = self::resolverServiciosCita($pdo, $medicoId, $procedimiento, $serviciosInput);
+        return (float)$res['total'];
     }
 
     /**
@@ -97,26 +162,29 @@ class CitaController {
             $stmt->execute($params);
             $citas = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-            // Asegurar que cada cita devuelva su monto real (y rellenar citas antiguas que tenían 0.00)
+            // Asegurar que cada cita devuelva su desglose de servicios y monto real
             $updMonto = $pdo->prepare("UPDATE gm_citas SET total_usd = :total WHERE id = :id");
             foreach ($citas as &$cita) {
+                $resServicios = self::resolverServiciosCita(
+                    $pdo,
+                    (int)$cita['medico_id'],
+                    (string)($cita['procedimiento'] ?? '')
+                );
+
                 $montoGuardado = isset($cita['total_usd']) ? (float)$cita['total_usd'] : 0.00;
-                if ($montoGuardado <= 0 && !empty($cita['procedimiento'])) {
-                    $montoCalculado = self::calcularMontoServicios(
-                        $pdo,
-                        (int)$cita['medico_id'],
-                        (string)$cita['procedimiento']
-                    );
-                    if ($montoCalculado > 0) {
-                        $montoGuardado = $montoCalculado;
-                        $updMonto->execute([
-                            ':total' => $montoCalculado,
-                            ':id'    => (int)$cita['id']
-                        ]);
-                    }
+                if ($montoGuardado <= 0 && $resServicios['total'] > 0) {
+                    $montoGuardado = $resServicios['total'];
+                    $updMonto->execute([
+                        ':total' => $montoGuardado,
+                        ':id'    => (int)$cita['id']
+                    ]);
                 }
-                $cita['total_usd'] = number_format($montoGuardado, 2, '.', '');
-                $cita['monto_usd'] = $cita['total_usd'];
+
+                $montoFormateado     = number_format($montoGuardado, 2, '.', '');
+                $cita['servicios']   = $resServicios['servicios'];
+                $cita['total_usd']   = $montoFormateado;
+                $cita['monto_usd']   = $montoFormateado;
+                $cita['monto_total'] = $montoFormateado;
             }
             unset($cita);
 
@@ -178,12 +246,34 @@ class CitaController {
             }
 
             $estadoInicial = $input['estado_cita'] ?? ($cal['default_status'] ?: 'reservada');
-            $procedimiento = trim($input['procedimiento'] ?? 'Consulta General');
+
+            // Si los servicios vienen como arreglo sin 'procedimiento', construir el texto separado por coma
+            $procedimiento = trim((string)($input['procedimiento'] ?? ''));
+            if ($procedimiento === '' && !empty($input['servicios']) && is_array($input['servicios'])) {
+                $nombres = [];
+                foreach ($input['servicios'] as $srv) {
+                    if (is_string($srv) && trim($srv) !== '') {
+                        $nombres[] = trim($srv);
+                    } elseif (is_array($srv)) {
+                        $n = trim((string)($srv['nombre_servicio'] ?? $srv['nombre'] ?? ''));
+                        if ($n !== '') {
+                            $nombres[] = $n;
+                        }
+                    }
+                }
+                $procedimiento = implode(', ', $nombres);
+            }
+            if ($procedimiento === '') {
+                $procedimiento = 'Consulta General';
+            }
 
             // Calcular monto desde gm_servicios o tomar el enviado si es mayor a 0
-            $totalUsd = isset($input['total_usd']) ? (float)$input['total_usd'] : (isset($input['monto_usd']) ? (float)$input['monto_usd'] : 0.00);
+            $totalUsd = isset($input['total_usd'])
+                ? (float)$input['total_usd']
+                : (isset($input['monto_usd']) ? (float)$input['monto_usd'] : (isset($input['monto_total']) ? (float)$input['monto_total'] : 0.00));
+
             if ($totalUsd <= 0) {
-                $totalUsd = self::calcularMontoServicios($pdo, $medicoId, $procedimiento);
+                $totalUsd = self::calcularMontoServicios($pdo, $medicoId, $procedimiento, $input['servicios'] ?? null);
             }
 
             $sql = "INSERT INTO gm_citas 
@@ -257,7 +347,9 @@ class CitaController {
                 $medStmt->execute([':id' => $citaId]);
                 $medId = (int)$medStmt->fetchColumn();
                 if ($medId > 0) {
-                    $nuevoTotal = isset($input['total_usd']) ? (float)$input['total_usd'] : self::calcularMontoServicios($pdo, $medId, $procNuevo);
+                    $nuevoTotal = isset($input['total_usd'])
+                        ? (float)$input['total_usd']
+                        : self::calcularMontoServicios($pdo, $medId, $procNuevo, $input['servicios'] ?? null);
                     $campos[] = "total_usd = :total";
                     $params[':total'] = round($nuevoTotal, 2);
                 }
