@@ -309,8 +309,8 @@ class CitaController {
                   AND estado_cita COLLATE utf8mb4_unicode_ci = 'en_espera'
                   AND id != :id
                   AND (
-                      (:turno > 0 AND numero_llegada > 0 AND numero_llegada < :turno)
-                      OR (:turno <= 0)
+                      (:turno1 > 0 AND numero_llegada > 0 AND numero_llegada < :turno2)
+                      OR (:turno3 <= 0)
                   )
             ");
 
@@ -344,11 +344,14 @@ class CitaController {
                     $stmtColaEnConsulta->execute([':med' => $medId, ':fecha' => $cita['fecha_cita']]);
                     $enConsulta = (int)$stmtColaEnConsulta->fetchColumn();
 
+                    $turnoActual = (int)($cita['numero_llegada'] ?? 0);
                     $stmtColaEsperaDelante->execute([
-                        ':med'   => $medId,
-                        ':fecha' => $cita['fecha_cita'],
-                        ':id'    => (int)$cita['id'],
-                        ':turno' => (int)($cita['numero_llegada'] ?? 0)
+                        ':med'    => $medId,
+                        ':fecha'  => $cita['fecha_cita'],
+                        ':id'     => (int)$cita['id'],
+                        ':turno1' => $turnoActual,
+                        ':turno2' => $turnoActual,
+                        ':turno3' => $turnoActual,
                     ]);
                     $enEsperaDelante = (int)$stmtColaEsperaDelante->fetchColumn();
 
@@ -356,16 +359,16 @@ class CitaController {
                     $tiempoEstimadoMin = (int)round($pacientesDelante * $promMin);
                 }
 
-                $montoFormateado             = number_format($montoGuardado, 2, '.', '');
-                $cita['servicios']           = $resServicios['servicios'];
-                $cita['total_usd']           = $montoFormateado;
-                $cita['monto_usd']           = $montoFormateado;
-                $cita['monto_total']         = $montoFormateado;
-                $cita['numero_llegada']      = (int)($cita['numero_llegada'] ?? 0);
-                $cita['tipo_cita']           = trim((string)($cita['tipo_cita'] ?? 'Hora Programada'));
+                $montoFormateado               = number_format($montoGuardado, 2, '.', '');
+                $cita['servicios']             = $resServicios['servicios'];
+                $cita['total_usd']             = $montoFormateado;
+                $cita['monto_usd']             = $montoFormateado;
+                $cita['monto_total']           = $montoFormateado;
+                $cita['numero_llegada']        = (int)($cita['numero_llegada'] ?? 0);
+                $cita['tipo_cita']             = trim((string)($cita['tipo_cita'] ?? 'Hora Programada'));
                 $cita['promedio_atencion_min'] = (int)round($promMin);
-                $cita['pacientes_delante']   = $pacientesDelante;
-                $cita['tiempo_estimado_min'] = $tiempoEstimadoMin;
+                $cita['pacientes_delante']     = $pacientesDelante;
+                $cita['tiempo_estimado_min']   = $tiempoEstimadoMin;
             }
             unset($cita);
 
