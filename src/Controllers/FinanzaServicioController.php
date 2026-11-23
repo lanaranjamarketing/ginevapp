@@ -245,7 +245,7 @@ class FinanzaServicioController {
             $fecha = !empty($input['fecha']) ? trim($input['fecha']) : date('Y-m-d H:i:s');
 
             $sql = "INSERT INTO gm_tasa_bcv (fecha, tasa_usd) VALUES (:fecha, :tasa)
-                    ON DUPLICATE KEY UPDATE tasa_usd = :tasa";
+                    ON DUPLICATE KEY UPDATE tasa_usd = VALUES(tasa_usd)";
             $pdo->prepare($sql)->execute([
                 ':fecha' => $fecha,
                 ':tasa'  => $tasaUsd
