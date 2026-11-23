@@ -75,6 +75,7 @@ use App\Controllers\FinanzaServicioController;
 use App\Controllers\AjustesMedicoController;
 use App\Documentos\ValidadorInformePublico;
 use App\Documentos\FacturaPdfGenerator;
+use App\Documentos\PresupuestoPdfGenerator;
 
 // Interceptor global para códigos QR que vengan con ?wpgm_marcar_llegada=1&medico_id=X
 if (isset($_GET['wpgm_marcar_llegada']) && $_GET['wpgm_marcar_llegada'] == '1') {
@@ -146,6 +147,10 @@ if ($uri === '/' || $uri === '/api') {
             "POST /api/finanzas/egreso",
             "POST /api/finanzas/eliminar-egresos",
             "POST /api/finanzas/facturar",
+            "GET /api/presupuestos",
+            "POST /api/presupuestos",
+            "GET /api/presupuestos/pdf",
+            "GET /validar-presupuesto",
             "GET /validar-factura",
             "GET /api/medico/ajustes",
             "POST /api/medico/perfil",
@@ -258,6 +263,9 @@ if ($uri === '/' || $uri === '/api') {
     HistoriaController::actualizarExamen($input);
 
 } elseif ($uri === '/api/historias/pdf' && $method === 'GET') {
+    if (ob_get_length()) {
+        ob_clean();
+    }
     HistoriaController::imprimirPdf();
 
 } elseif (($uri === '/validar-informe' || $uri === '/api/validar-informe') && $method === 'GET') {
@@ -332,11 +340,25 @@ if ($uri === '/' || $uri === '/api') {
 } elseif (preg_match('#^/api/presupuestos/(\d+)/aprobar$#', $uri, $matches) && $method === 'POST') {
     FinanzaServicioController::aprobarYCargarPresupuesto((int)$matches[1], $input);
 
+} elseif ($uri === '/api/presupuestos/pdf' && $method === 'GET') {
+    if (ob_get_length()) {
+        ob_clean();
+    }
+    PresupuestoPdfGenerator::imprimirPdf();
+    exit;
+
+} elseif (preg_match('#^/uploads/presupuestos_medicos/presupuesto-(\d+)-#', $uri, $matches) && $method === 'GET') {
+    if (ob_get_length()) {
+        ob_clean();
+    }
+    PresupuestoPdfGenerator::imprimirPdf((int)$matches[1]);
+    exit;
+
 } elseif (($uri === '/validar-presupuesto' || $uri === '/api/validar-presupuesto') && $method === 'GET') {
     if (ob_get_length()) {
         ob_clean();
     }
-    \App\Documentos\PresupuestoPdfGenerator::renderizarValidadorPublico();
+    PresupuestoPdfGenerator::renderizarValidadorPublico();
 
 } elseif (($uri === '/validar-factura' || $uri === '/api/validar-factura') && $method === 'GET') {
     if (ob_get_length()) {

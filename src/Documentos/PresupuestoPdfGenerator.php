@@ -77,10 +77,6 @@ class PresupuestoPdfGenerator {
         return $metas;
     }
 
-    /**
-     * Calcula el correlativo independiente de presupuesto para cada médico:
-     * Toma MAX(numero_presupuesto) de ese mismo médico + 1 (nunca menor al inicio_presupuesto configurado).
-     */
     private static function obtenerSiguienteNumeroPresupuestoMedico(PDO $pdo, int $medicoId, array $metas): string {
         $inicioConfigurado = max(1, intval($metas['inicio_presupuesto'] ?? 1));
 
@@ -137,8 +133,7 @@ class PresupuestoPdfGenerator {
     }
 
     /**
-     * Genera el documento HTML/PDF del Presupuesto Médico con numeración correlativa independiente por médico,
-     * especialidad real desde BD, validez de 3 días, QR y colores dinámicos del tema activo.
+     * Genera el documento HTML/PDF del Presupuesto Médico dinámicamente desde la BD.
      */
     public static function generarPresupuestoPdf(int $presupuestoId, ?PDO $pdoExterno = null, array $temaOverride = []): array {
         $pdo = $pdoExterno ?? Database::conectar();
@@ -185,7 +180,6 @@ class PresupuestoPdfGenerator {
         $tituloMedicoMayus = mb_strtoupper($prefijoDr . ' ' . $nombreMedCompleto, 'UTF-8');
         $tituloMedicoFirma = $prefijoDrFirma . ' ' . $nombreMedCompleto;
 
-        // Especialidad real almacenada en BD (gm_usuarios_extendidos o gm_medico_meta)
         $especialidad = self::primerTextoNoVacio([
             $medico['especialidad'] ?? '',
             $medico['especialidad_medica'] ?? '',
@@ -229,7 +223,6 @@ class PresupuestoPdfGenerator {
         $colorSuave = self::aclararHex($colorPrimario, 0.93);
         $colorBorde = self::aclararHex($colorPrimario, 0.65);
 
-        // Número de presupuesto independiente por médico
         $numeroPres = !empty($pres['numero_presupuesto'])
             ? str_pad(trim((string)$pres['numero_presupuesto']), 6, '0', STR_PAD_LEFT)
             : self::obtenerSiguienteNumeroPresupuestoMedico($pdo, $realMedicoId, $metas);
@@ -241,7 +234,6 @@ class PresupuestoPdfGenerator {
             . '&cp=' . urlencode($colorPrimario);
         $urlQrImagen = 'https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=' . urlencode($urlValidacion);
 
-        // Datos del paciente
         $razonSocial = trim((string)($pres['paciente_nombre'] ?? ''));
         if ($razonSocial === '') {
             $razonSocial = trim(
@@ -266,7 +258,6 @@ class PresupuestoPdfGenerator {
 
         $telefonoPac = trim((string)($pres['paciente_telefono'] ?? ($pres['p_whatsapp'] ?? '—'))) ?: '—';
 
-        // Fechas de emisión y vencimiento (+3 días)
         $tsEmision = !empty($pres['fecha_emision']) ? strtotime((string)$pres['fecha_emision']) : time();
         $tsVenc    = !empty($pres['fecha_vencimiento']) ? strtotime((string)$pres['fecha_vencimiento']) : strtotime('+3 days', $tsEmision);
 
@@ -626,27 +617,56 @@ class PresupuestoPdfGenerator {
 </body>
 </html>';
 
-        $dir = __DIR__ . '/../../public/uploads/presupuestos_medicos/';
-        if (!is_dir($dir)) {
-            @mkdir($dir, 0755, true);
-        }
-
-        $nombreArchivo = 'presupuesto-' . $realMedicoId . '-' . $numeroPres . '-' . time() . '.html';
-        @file_put_contents($dir . $nombreArchivo, $html);
-        $urlArchivo = $baseUrl . '/uploads/presupuestos_medicos/' . $nombreArchivo;
+        // URL dinámica directa desde la base de datos (no depende de archivos estáticos efímeros)
+        $urlDinamica = $baseUrl . '/api/presupuestos/pdf?id=' . $presupuestoId;
 
         $upd = $pdo->prepare("UPDATE gm_presupuestos SET numero_presupuesto = :num, url_pdf = :url WHERE id = :id");
         $upd->execute([
             ':num' => $numeroPres,
-            ':url' => $urlArchivo,
+            ':url' => $urlDinamica,
             ':id'  => $presupuestoId
         ]);
 
         return [
             'html'               => $html,
-            'url'                => $urlArchivo,
+            'url'                => $urlDinamica,
             'numero_presupuesto' => $numeroPres,
         ];
+    }
+
+    /**
+     * GET /api/presupuestos/pdf?id=X
+     * Renderiza el presupuesto médico directamente desde gm_presupuestos
+     */
+    public static function imprimirPdf(int $presupuestoId = 0): void {
+        try {
+            if ($presupuestoId <= 0) {
+                $presupuestoId = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+            }
+            if ($presupuestoId <= 0) {
+                http_response_code(400);
+                echo "ID de presupuesto inválido.";
+                return;
+            }
+
+            $temaOverride = [
+                'color_primario'   => $_GET['color_primario'] ?? null,
+                'color_secundario' => $_GET['color_secundario'] ?? null,
+            ];
+
+            $generado = self::generarPresupuestoPdf($presupuestoId, null, $temaOverride);
+            if (empty($generado['html'])) {
+                http_response_code(404);
+                echo "Presupuesto médico no encontrado.";
+                return;
+            }
+
+            header('Content-Type: text/html; charset=utf-8');
+            echo $generado['html'];
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo "Error generando presupuesto PDF: " . htmlspecialchars($e->getMessage());
+        }
     }
 
     /**
@@ -695,6 +715,7 @@ class PresupuestoPdfGenerator {
                 $hoy = date('Y-m-d');
                 $vigente = ($hoy <= (string)$pres['fecha_vencimiento']);
                 $numFmt = !empty($pres['numero_presupuesto']) ? str_pad((string)$pres['numero_presupuesto'], 6, '0', STR_PAD_LEFT) : str_pad((string)$pres['id'], 6, '0', STR_PAD_LEFT);
+                $urlVerPdf = self::baseUrlPublica() . '/api/presupuestos/pdf?id=' . (int)$pres['id'];
 
                 echo '<div style="text-align:center; border-bottom:2px solid ' . $esc($colorPrimario) . '; padding-bottom:18px; margin-bottom:18px;">
                         <div style="display:inline-block; background:' . ($vigente ? $esc($colorBadgeBg) : '#fee2e2') . '; color:' . ($vigente ? $esc($colorPrimario) : '#dc2626') . '; padding:6px 16px; border-radius:20px; font-weight:bold; font-size:13px; margin-bottom:10px;">
@@ -723,15 +744,12 @@ class PresupuestoPdfGenerator {
                             <td style="padding:10px; color:#64748b;"><strong>Monto Total:</strong></td>
                             <td style="padding:10px; font-weight:bold;">$' . number_format((float)$pres['total_usd'], 2) . ' USD / Bs. ' . number_format((float)$pres['total_bs'], 2, ',', '.') . '</td>
                         </tr>
-                      </table>';
-
-                if (!empty($pres['url_pdf'])) {
-                    echo '<div style="margin-top:24px; text-align:center;">
-                            <a href="' . $esc($pres['url_pdf']) . '" target="_blank" style="display:inline-block; background:' . $esc($colorPrimario) . '; color:#fff; padding:12px 24px; border-radius:8px; font-weight:bold; text-decoration:none;">
-                                📥 Ver / Descargar Presupuesto
-                            </a>
-                          </div>';
-                }
+                      </table>
+                      <div style="margin-top:24px; text-align:center;">
+                        <a href="' . $esc($urlVerPdf) . '" target="_blank" style="display:inline-block; background:' . $esc($colorPrimario) . '; color:#fff; padding:12px 24px; border-radius:8px; font-weight:bold; text-decoration:none;">
+                            📥 Ver / Descargar Presupuesto
+                        </a>
+                      </div>';
             }
             echo '</div>';
         } catch (Exception $e) {
