@@ -2,6 +2,7 @@
 namespace App\Controllers;
 
 use App\Config\Database;
+use App\Documentos\InformeMedicoPdfGenerator;
 use PDO;
 use Exception;
 
@@ -11,7 +12,8 @@ class ArchivoController {
 
     /**
      * Garantiza de forma segura que gm_historias_examenes soporte exámenes
-     * asociados a historias, múltiples archivos adjuntos y estudios independientes.
+     * asociados a historias, múltiples archivos adjuntos, responsable de carga,
+     * observaciones del Dr y estudios independientes.
      */
     private static function asegurarEsquema(PDO $pdo): void {
         if (self::$esquemaVerificado) {
@@ -22,10 +24,12 @@ class ArchivoController {
             $pdo->exec("ALTER TABLE `gm_historias_examenes` MODIFY COLUMN `archivo_adjunto_url` text DEFAULT NULL");
 
             $columnas = [
-                'paciente_id'   => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `paciente_id` bigint(20) DEFAULT NULL AFTER `historia_id`",
-                'medico_id'     => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `medico_id` bigint(20) DEFAULT NULL AFTER `paciente_id`",
-                'observaciones' => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `observaciones` text DEFAULT NULL AFTER `descripcion_solicitud`",
-                'fecha_examen'  => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `fecha_examen` date DEFAULT NULL AFTER `archivo_adjunto_url`",
+                'paciente_id'       => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `paciente_id` bigint(20) DEFAULT NULL AFTER `historia_id`",
+                'medico_id'         => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `medico_id` bigint(20) DEFAULT NULL AFTER `paciente_id`",
+                'responsable_carga' => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `responsable_carga` varchar(30) NOT NULL DEFAULT 'medico' AFTER `tipo_examen`",
+                'observaciones'     => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `observaciones` text DEFAULT NULL AFTER `descripcion_solicitud`",
+                'observaciones_dr'  => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `observaciones_dr` text DEFAULT NULL AFTER `observaciones`",
+                'fecha_examen'      => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `fecha_examen` date DEFAULT NULL AFTER `archivo_adjunto_url`",
             ];
 
             foreach ($columnas as $col => $sql) {
@@ -61,6 +65,57 @@ class ArchivoController {
     }
 
     /**
+     * Normaliza el responsable de carga ('medico' o 'paciente').
+     */
+    private static function normalizarResponsableCarga($valor): string {
+        $v = strtolower(trim((string)($valor ?? 'medico')));
+        return $v === 'paciente' ? 'paciente' : 'medico';
+    }
+
+    /**
+     * Decodifica a array las rutas almacenadas previamente en archivo_adjunto_url.
+     */
+    private static function decodificarRutasExistentes($raw): array {
+        if (empty($raw)) {
+            return [];
+        }
+        if (is_array($raw)) {
+            return array_values(array_filter(array_map('strval', $raw)));
+        }
+        $str = trim((string)$raw);
+        if ($str === '') {
+            return [];
+        }
+        if (strpos($str, '[') === 0) {
+            $dec = json_decode($str, true);
+            if (is_array($dec)) {
+                return array_values(array_filter(array_map('strval', $dec)));
+            }
+        }
+        return [$str];
+    }
+
+    /**
+     * Codifica la lista de rutas para persistir en archivo_adjunto_url.
+     */
+    private static function codificarRutas(array $rutas): ?string {
+        $limpias = [];
+        foreach ($rutas as $r) {
+            $v = trim((string)$r);
+            if ($v !== '' && !in_array($v, $limpias, true)) {
+                $limpias[] = $v;
+            }
+        }
+        if (count($limpias) === 0) {
+            return null;
+        }
+        if (count($limpias) === 1) {
+            return $limpias[0];
+        }
+        return json_encode($limpias, JSON_UNESCAPED_SLASHES);
+    }
+
+    /**
      * Procesa archivos adjuntos enviados en Base64 dentro del JSON ('archivos_base64')
      * o mediante $_FILES ('archivos[]', 'archivo', 'file') y los guarda en /public/uploads/examenes/.
      */
@@ -80,7 +135,7 @@ class ArchivoController {
         $prefijo  = $historiaId > 0 ? ('exam_h' . $historiaId) : ('exam_ind_p' . $pacienteId);
         $rutasGuardadas = [];
 
-        // 1. Procesar archivos enviados en Base64 dentro del JSON (sin multipart/form-data)
+        // 1. Procesar archivos enviados en Base64 dentro del JSON
         if (!empty($datos['archivos_base64']) && is_array($datos['archivos_base64'])) {
             foreach ($datos['archivos_base64'] as $idx => $item) {
                 if (!is_array($item) || empty($item['data'])) {
@@ -201,6 +256,11 @@ class ArchivoController {
                             p.whatsapp AS whatsapp,
                             p.sexo AS paciente_sexo,
                             p.edad AS paciente_edad,
+                            p.peso AS paciente_peso,
+                            p.estatura AS paciente_estatura,
+                            p.ocupacion AS paciente_ocupacion,
+                            p.direccion_detalle AS paciente_direccion,
+                            p.email AS paciente_email,
                             CONCAT(m.nombre, ' ', m.apellido) AS medico_nombre,
                             m.especialidad AS medico_especialidad
                         FROM gm_historias_medicas h
@@ -293,15 +353,17 @@ class ArchivoController {
 
             $datos = self::obtenerDatosRequest($input);
 
-            $medicoId    = (int)($datos['medico_id'] ?? 0);
-            $pacienteId  = (int)($datos['paciente_id'] ?? 0);
-            $historiaId  = !empty($datos['historia_id']) ? (int)$datos['historia_id'] : 0;
-            $tipoExamen  = trim((string)($datos['tipo_examen'] ?? $datos['tipo'] ?? ''));
-            $descripcion = trim((string)($datos['descripcion_solicitud'] ?? $datos['descripcion'] ?? ''));
-            $observacion = trim((string)($datos['observaciones'] ?? ''));
-            $resultado   = trim((string)($datos['resultado'] ?? ''));
-            $estado      = trim((string)($datos['estado_examen'] ?? $datos['estatus'] ?? 'Pendiente'));
-            $fechaExamen = trim((string)($datos['fecha_examen'] ?? date('Y-m-d')));
+            $medicoId         = (int)($datos['medico_id'] ?? 0);
+            $pacienteId       = (int)($datos['paciente_id'] ?? 0);
+            $historiaId       = !empty($datos['historia_id']) ? (int)$datos['historia_id'] : 0;
+            $tipoExamen       = trim((string)($datos['tipo_examen'] ?? $datos['tipo'] ?? ''));
+            $responsableCarga = self::normalizarResponsableCarga($datos['responsable_carga'] ?? 'medico');
+            $descripcion      = trim((string)($datos['descripcion_solicitud'] ?? $datos['descripcion'] ?? ''));
+            $observacion      = trim((string)($datos['observaciones'] ?? ''));
+            $observacionDr    = trim((string)($datos['observaciones_dr'] ?? ''));
+            $resultado        = trim((string)($datos['resultado'] ?? ''));
+            $estado           = trim((string)($datos['estado_examen'] ?? $datos['estatus'] ?? 'Pendiente'));
+            $fechaExamen      = trim((string)($datos['fecha_examen'] ?? date('Y-m-d')));
 
             if ($tipoExamen === '') {
                 http_response_code(400);
@@ -343,20 +405,18 @@ class ArchivoController {
                 return;
             }
 
-            // Procesar uno o varios archivos adjuntos (Base64 en JSON o multipart/form-data)
+            // Procesar uno o varios archivos adjuntos
             $rutasSubidas = self::guardarArchivosAdjuntos($historiaId, $pacienteId, $datos);
             $archivoUrl = !empty($datos['archivo_adjunto_url']) ? trim((string)$datos['archivo_adjunto_url']) : null;
 
-            if (count($rutasSubidas) === 1) {
-                $archivoUrl = $rutasSubidas[0];
-            } elseif (count($rutasSubidas) > 1) {
-                $archivoUrl = json_encode($rutasSubidas, JSON_UNESCAPED_SLASHES);
+            if (!empty($rutasSubidas)) {
+                $archivoUrl = self::codificarRutas($rutasSubidas);
             }
 
             $sql = "INSERT INTO gm_historias_examenes 
-                    (historia_id, paciente_id, medico_id, tipo_examen, descripcion_solicitud, observaciones, resultado, estado_examen, archivo_adjunto_url, fecha_examen)
+                    (historia_id, paciente_id, medico_id, tipo_examen, responsable_carga, descripcion_solicitud, observaciones, observaciones_dr, resultado, estado_examen, archivo_adjunto_url, fecha_examen)
                     VALUES 
-                    (:hid, :pac, :med, :tipo, :desc, :obs, :res, :estado, :url, :fecha)";
+                    (:hid, :pac, :med, :tipo, :resp, :desc, :obs, :obs_dr, :res, :estado, :url, :fecha)";
 
             $stmt = $pdo->prepare($sql);
             $stmt->execute([
@@ -364,8 +424,10 @@ class ArchivoController {
                 ':pac'    => $pacienteId,
                 ':med'    => $medicoId,
                 ':tipo'   => $tipoExamen,
+                ':resp'   => $responsableCarga,
                 ':desc'   => $descripcion !== '' ? $descripcion : null,
                 ':obs'    => $observacion !== '' ? $observacion : null,
+                ':obs_dr' => $observacionDr !== '' ? $observacionDr : null,
                 ':res'    => $resultado !== '' ? $resultado : ($observacion !== '' ? $observacion : null),
                 ':estado' => $estado !== '' ? $estado : 'Pendiente',
                 ':url'    => $archivoUrl,
@@ -382,6 +444,7 @@ class ArchivoController {
                     : "Estudio independiente registrado correctamente en el archivo.",
                 "examen_id"           => $nuevoId,
                 "historia_id"         => $historiaId > 0 ? $historiaId : null,
+                "responsable_carga"   => $responsableCarga,
                 "archivo_adjunto_url" => $archivoUrl,
                 "archivos"            => $rutasSubidas
             ], JSON_UNESCAPED_UNICODE);
@@ -393,7 +456,8 @@ class ArchivoController {
     }
 
     /**
-     * PUT /api/archivo/examenes
+     * PUT /api/archivo/examenes  y  POST /api/archivo/examenes/actualizar
+     * Permite editar todos los datos del examen, conservar/eliminar archivos previos y adjuntar nuevos.
      */
     public static function actualizarExamen($input = []) {
         try {
@@ -408,24 +472,100 @@ class ArchivoController {
             $pdo = Database::conectar();
             self::asegurarEsquema($pdo);
 
+            $stmtActual = $pdo->prepare("SELECT * FROM gm_historias_examenes WHERE id = :id LIMIT 1");
+            $stmtActual->execute([':id' => $examenId]);
+            $examenActual = $stmtActual->fetch(PDO::FETCH_ASSOC);
+
+            if (!$examenActual) {
+                http_response_code(404);
+                echo json_encode(["status" => "error", "mensaje" => "El examen #$examenId no existe."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
             $campos = [];
             $params = [':id' => $examenId];
 
-            if (!empty($datos['estado_examen'])) {
+            if (array_key_exists('historia_id', $datos)) {
+                $hid = (int)$datos['historia_id'];
+                $campos[] = "historia_id = :hid";
+                $params[':hid'] = $hid > 0 ? $hid : null;
+            }
+            if (!empty($datos['tipo_examen']) || !empty($datos['tipo'])) {
+                $campos[] = "tipo_examen = :tipo";
+                $params[':tipo'] = trim((string)($datos['tipo_examen'] ?? $datos['tipo']));
+            }
+            if (isset($datos['responsable_carga'])) {
+                $campos[] = "responsable_carga = :resp";
+                $params[':resp'] = self::normalizarResponsableCarga($datos['responsable_carga']);
+            }
+            if (isset($datos['descripcion_solicitud']) || isset($datos['descripcion'])) {
+                $descVal = trim((string)($datos['descripcion_solicitud'] ?? $datos['descripcion'] ?? ''));
+                $campos[] = "descripcion_solicitud = :desc";
+                $params[':desc'] = $descVal !== '' ? $descVal : null;
+            }
+            if (!empty($datos['estado_examen']) || !empty($datos['estatus'])) {
                 $campos[] = "estado_examen = :estado";
-                $params[':estado'] = trim((string)$datos['estado_examen']);
+                $params[':estado'] = trim((string)($datos['estado_examen'] ?? $datos['estatus']));
             }
             if (isset($datos['resultado'])) {
+                $resVal = trim((string)$datos['resultado']);
                 $campos[] = "resultado = :res";
-                $params[':res'] = trim((string)$datos['resultado']);
+                $params[':res'] = $resVal !== '' ? $resVal : null;
             }
             if (isset($datos['observaciones'])) {
+                $obsVal = trim((string)$datos['observaciones']);
                 $campos[] = "observaciones = :obs";
-                $params[':obs'] = trim((string)$datos['observaciones']);
+                $params[':obs'] = $obsVal !== '' ? $obsVal : null;
             }
-            if (!empty($datos['archivo_adjunto_url'])) {
+            if (isset($datos['observaciones_dr'])) {
+                $obsDrVal = trim((string)$datos['observaciones_dr']);
+                $campos[] = "observaciones_dr = :obs_dr";
+                $params[':obs_dr'] = $obsDrVal !== '' ? $obsDrVal : null;
+            }
+            if (!empty($datos['fecha_examen']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', trim((string)$datos['fecha_examen']))) {
+                $campos[] = "fecha_examen = :fecha";
+                $params[':fecha'] = trim((string)$datos['fecha_examen']);
+            }
+
+            // Gestión de archivos: conservar los que no fueron eliminados en UI + nuevos subidos
+            $hidParaArchivo = (int)($datos['historia_id'] ?? $examenActual['historia_id'] ?? 0);
+            $pacParaArchivo = (int)($datos['paciente_id'] ?? $examenActual['paciente_id'] ?? 0);
+            $rutasNuevas = self::guardarArchivosAdjuntos($hidParaArchivo, $pacParaArchivo, $datos);
+
+            $seGestionanArchivos = array_key_exists('archivos_existentes', $datos)
+                || !empty($rutasNuevas)
+                || array_key_exists('archivo_adjunto_url', $datos);
+
+            if ($seGestionanArchivos) {
+                $rutasConservadas = [];
+                if (array_key_exists('archivos_existentes', $datos)) {
+                    $rawExist = $datos['archivos_existentes'];
+                    if (is_string($rawExist)) {
+                        $dec = json_decode($rawExist, true);
+                        $rutasConservadas = is_array($dec) ? $dec : self::decodificarRutasExistentes($rawExist);
+                    } elseif (is_array($rawExist)) {
+                        $rutasConservadas = $rawExist;
+                    }
+                    // Normalizar URLs completas a rutas relativas /uploads/examenes/... si aplica
+                    $rutasConservadas = array_map(function ($u) {
+                        $str = trim((string)$u);
+                        if (preg_match('#(/uploads/examenes/[^?\s]+)#', $str, $m)) {
+                            return $m[1];
+                        }
+                        return $str;
+                    }, $rutasConservadas);
+                } else {
+                    $rutasConservadas = self::decodificarRutasExistentes($examenActual['archivo_adjunto_url'] ?? '');
+                }
+
+                $todasLasRutas = array_merge($rutasConservadas, $rutasNuevas);
+                $urlFinal = self::codificarRutas($todasLasRutas);
+                if (empty($todasLasRutas) && !empty($datos['archivo_adjunto_url'])) {
+                    $urlFinal = trim((string)$datos['archivo_adjunto_url']);
+                }
+
                 $campos[] = "archivo_adjunto_url = :url";
-                $params[':url'] = trim((string)$datos['archivo_adjunto_url']);
+                $params[':url'] = $urlFinal;
             }
 
             if (empty($campos)) {
@@ -440,6 +580,129 @@ class ArchivoController {
             echo json_encode([
                 "status"  => "success",
                 "mensaje" => "Examen actualizado correctamente."
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * PUT /api/historias  y  PUT /api/archivo/historias
+     * Permite al médico editar una consulta / historia médica existente sin duplicar registros.
+     */
+    public static function actualizarHistoria($input = []) {
+        try {
+            $datos = self::obtenerDatosRequest($input);
+            $historiaId = (int)($datos['id'] ?? $datos['historia_id'] ?? 0);
+            if ($historiaId <= 0) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "Debe indicar el 'id' de la historia médica."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo = Database::conectar();
+
+            $stmtCheck = $pdo->prepare("SELECT * FROM gm_historias_medicas WHERE id = :id LIMIT 1");
+            $stmtCheck->execute([':id' => $historiaId]);
+            $histActual = $stmtCheck->fetch(PDO::FETCH_ASSOC);
+
+            if (!$histActual) {
+                http_response_code(404);
+                echo json_encode(["status" => "error", "mensaje" => "La historia médica #$historiaId no existe."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $camposEditables = [
+                'motivo_consulta',
+                'antecedentes_personales',
+                'habitos_psicobiologicos',
+                'antecedentes_familiares',
+                'antecedentes_quirurgicos',
+                'menarquia',
+                'sexarquia',
+                'ciclos_menstruales',
+                'fur',
+                'activa_sexual',
+                'num_parejas',
+                'gt',
+                'pa',
+                'ab',
+                'cs',
+                'metodos_acos',
+                'papanicolaou',
+                'tension_arterial',
+                'frecuencia_cardiaca',
+                'examen_mamario',
+                'examen_pelvico',
+                'diagnostico',
+                'plan_medico',
+                'tratamiento',
+                'notas',
+                'estado_historia',
+            ];
+
+            $sets = [];
+            $params = [':id' => $historiaId];
+
+            foreach ($camposEditables as $col) {
+                if (array_key_exists($col, $datos)) {
+                    $sets[] = "`$col` = :$col";
+                    $val = $datos[$col];
+                    $params[":$col"] = ($val === null) ? null : trim((string)$val);
+                }
+            }
+
+            if (empty($sets)) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "No se enviaron campos clínicos para actualizar."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo->prepare("UPDATE gm_historias_medicas SET " . implode(", ", $sets) . " WHERE id = :id")
+                ->execute($params);
+
+            // Actualizar antropometría del paciente si se envió peso o estatura
+            $pacId = (int)$histActual['paciente_id'];
+            if ($pacId > 0 && (isset($datos['peso_actual']) || isset($datos['peso']) || isset($datos['estatura_actual']) || isset($datos['estatura']))) {
+                $peso = (float)($datos['peso_actual'] ?? $datos['peso'] ?? 0);
+                $estatura = trim((string)($datos['estatura_actual'] ?? $datos['estatura'] ?? ''));
+                if ($peso > 0 || $estatura !== '') {
+                    $updPac = [];
+                    $pPac = [':uid' => $pacId];
+                    if ($peso > 0) {
+                        $updPac[] = "peso = :peso";
+                        $pPac[':peso'] = $peso;
+                    }
+                    if ($estatura !== '') {
+                        $updPac[] = "estatura = :est";
+                        $pPac[':est'] = $estatura;
+                    }
+                    if (!empty($updPac)) {
+                        $pdo->prepare("UPDATE gm_usuarios_extendidos SET " . implode(", ", $updPac) . " WHERE user_id = :uid")
+                            ->execute($pPac);
+                    }
+                }
+            }
+
+            // Regenerar el PDF del informe si existe el generador
+            if (class_exists(InformeMedicoPdfGenerator::class) && method_exists(InformeMedicoPdfGenerator::class, 'generar')) {
+                try {
+                    $nuevoPdf = InformeMedicoPdfGenerator::generar($pdo, $historiaId);
+                    if (!empty($nuevoPdf)) {
+                        $pdo->prepare("UPDATE gm_historias_medicas SET pdf_path = :p, url_informe_pdf = :p WHERE id = :id")
+                            ->execute([':p' => $nuevoPdf, ':id' => $historiaId]);
+                    }
+                } catch (Exception $ePdf) {
+                    // Continuar aunque el regenerado PDF falle
+                }
+            }
+
+            echo json_encode([
+                "status"      => "success",
+                "mensaje"     => "Consulta médica #$historiaId actualizada correctamente.",
+                "historia_id" => $historiaId
             ], JSON_UNESCAPED_UNICODE);
 
         } catch (Exception $e) {
