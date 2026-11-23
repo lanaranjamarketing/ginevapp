@@ -120,12 +120,14 @@ if ($uri === '/' || $uri === '/api') {
             "GET /api/historias",
             "GET /api/historias/antecedentes",
             "POST /api/historias",
+            "PUT /api/historias",
             "GET /api/historias/pdf",
             "GET /validar-informe",
             "PUT /api/examenes",
             "GET /api/archivo",
             "POST /api/archivo/examenes",
             "PUT /api/archivo/examenes",
+            "POST /api/archivo/examenes/actualizar",
             "GET /api/servicios",
             "POST /api/servicios",
             "POST /api/servicios/estado",
@@ -239,6 +241,13 @@ if ($uri === '/' || $uri === '/api') {
 } elseif ($uri === '/api/historias' && $method === 'POST') {
     HistoriaController::crear($input);
 
+} elseif ($uri === '/api/historias' && $method === 'PUT') {
+    if (method_exists(HistoriaController::class, 'actualizar')) {
+        HistoriaController::actualizar($input);
+    } else {
+        ArchivoController::actualizarHistoria($input);
+    }
+
 } elseif ($uri === '/api/examenes' && $method === 'PUT') {
     HistoriaController::actualizarExamen($input);
 
@@ -257,8 +266,11 @@ if ($uri === '/' || $uri === '/api') {
 } elseif ($uri === '/api/archivo/examenes' && $method === 'POST') {
     ArchivoController::crearExamen($input);
 
-} elseif ($uri === '/api/archivo/examenes' && $method === 'PUT') {
+} elseif (($uri === '/api/archivo/examenes' && $method === 'PUT') || ($uri === '/api/archivo/examenes/actualizar' && $method === 'POST')) {
     ArchivoController::actualizarExamen($input);
+
+} elseif ($uri === '/api/archivo/historias' && in_array($method, ['PUT', 'POST'], true)) {
+    ArchivoController::actualizarHistoria($input);
 
 } elseif ($uri === '/api/servicios' && $method === 'GET') {
     FinanzaServicioController::listarServicios();

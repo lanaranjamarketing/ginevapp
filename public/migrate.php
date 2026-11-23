@@ -239,11 +239,13 @@ try {
             `paciente_id` bigint(20) DEFAULT NULL,
             `medico_id` bigint(20) DEFAULT NULL,
             `tipo_examen` varchar(150) NOT NULL,
+            `responsable_carga` varchar(30) NOT NULL DEFAULT 'medico',
             `descripcion_solicitud` text DEFAULT NULL,
             `observaciones` text DEFAULT NULL,
+            `observaciones_dr` text DEFAULT NULL,
             `resultado` text DEFAULT NULL,
             `estado_examen` varchar(50) DEFAULT 'Pendiente',
-            `archivo_adjunto_url` varchar(255) DEFAULT NULL,
+            `archivo_adjunto_url` text DEFAULT NULL,
             `fecha_examen` date DEFAULT NULL,
             `fecha_registro` datetime DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (`id`)
@@ -363,13 +365,16 @@ try {
         }
     }
 
-    // Asegurar soporte de exámenes independientes en gm_historias_examenes
+    // Asegurar soporte de exámenes independientes, múltiples adjuntos, responsable_carga y observaciones_dr en gm_historias_examenes
     $pdo->exec("ALTER TABLE `gm_historias_examenes` MODIFY COLUMN `historia_id` mediumint(9) DEFAULT NULL");
+    $pdo->exec("ALTER TABLE `gm_historias_examenes` MODIFY COLUMN `archivo_adjunto_url` text DEFAULT NULL");
     $colsExamenes = [
-        'paciente_id'   => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `paciente_id` bigint(20) DEFAULT NULL AFTER `historia_id`",
-        'medico_id'     => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `medico_id` bigint(20) DEFAULT NULL AFTER `paciente_id`",
-        'observaciones' => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `observaciones` text DEFAULT NULL AFTER `descripcion_solicitud`",
-        'fecha_examen'  => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `fecha_examen` date DEFAULT NULL AFTER `archivo_adjunto_url`",
+        'paciente_id'       => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `paciente_id` bigint(20) DEFAULT NULL AFTER `historia_id`",
+        'medico_id'         => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `medico_id` bigint(20) DEFAULT NULL AFTER `paciente_id`",
+        'responsable_carga' => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `responsable_carga` varchar(30) NOT NULL DEFAULT 'medico' AFTER `tipo_examen`",
+        'observaciones'     => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `observaciones` text DEFAULT NULL AFTER `descripcion_solicitud`",
+        'observaciones_dr'  => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `observaciones_dr` text DEFAULT NULL AFTER `observaciones`",
+        'fecha_examen'      => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `fecha_examen` date DEFAULT NULL AFTER `archivo_adjunto_url`",
     ];
     foreach ($colsExamenes as $col => $alterSql) {
         $chk = $pdo->query("SHOW COLUMNS FROM `gm_historias_examenes` LIKE '$col'");
@@ -417,7 +422,7 @@ try {
 
     echo json_encode([
         "status" => "success",
-        "mensaje" => "¡Todas las tablas del sistema médico, metadatos por médico, presupuestos, facturación y configuración dinámica fueron creados y actualizados exitosamente!"
+        "mensaje" => "¡Todas las tablas del sistema médico, metadatos por médico, presupuestos, facturación, exámenes y configuración dinámica fueron creados y actualizados exitosamente!"
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
 
 } catch (PDOException $e) {
