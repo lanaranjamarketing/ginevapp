@@ -61,69 +61,94 @@ class ArchivoController {
     }
 
     /**
-     * Procesa uno o múltiples archivos subidos en $_FILES ('archivos[]', 'archivo' o 'file')
-     * y los guarda en /public/uploads/examenes/ (hasta 250 MB).
+     * Procesa archivos adjuntos enviados en Base64 dentro del JSON ('archivos_base64')
+     * o mediante $_FILES ('archivos[]', 'archivo', 'file') y los guarda en /public/uploads/examenes/.
      */
-    private static function guardarArchivosAdjuntos(int $historiaId, int $pacienteId): array {
+    private static function guardarArchivosAdjuntos(int $historiaId, int $pacienteId, array $datos = []): array {
         @ini_set('upload_max_filesize', '250M');
         @ini_set('post_max_size', '255M');
+        @ini_set('memory_limit', '512M');
         @ini_set('max_execution_time', '300');
         @ini_set('max_input_time', '300');
-
-        if (empty($_FILES)) {
-            return [];
-        }
 
         $uploadDir = __DIR__ . '/../../public/uploads/examenes/';
         if (!is_dir($uploadDir)) {
             @mkdir($uploadDir, 0775, true);
         }
 
-        $archivosParaProcesar = [];
-
-        // 1. Priorizar arreglo múltiple 'archivos[]'
-        if (isset($_FILES['archivos']) && is_array($_FILES['archivos']['name'])) {
-            $total = count($_FILES['archivos']['name']);
-            for ($i = 0; $i < $total; $i++) {
-                $archivosParaProcesar[] = [
-                    'name'     => $_FILES['archivos']['name'][$i] ?? '',
-                    'tmp_name' => $_FILES['archivos']['tmp_name'][$i] ?? '',
-                    'error'    => $_FILES['archivos']['error'][$i] ?? UPLOAD_ERR_NO_FILE,
-                    'size'     => (int)($_FILES['archivos']['size'][$i] ?? 0),
-                ];
-            }
-        } else {
-            // 2. Respaldo para archivo único ('archivo' o 'file')
-            $fileKey = isset($_FILES['archivo']) ? 'archivo' : (isset($_FILES['file']) ? 'file' : null);
-            if ($fileKey && isset($_FILES[$fileKey]['name'])) {
-                $archivosParaProcesar[] = [
-                    'name'     => $_FILES[$fileKey]['name'],
-                    'tmp_name' => $_FILES[$fileKey]['tmp_name'],
-                    'error'    => $_FILES[$fileKey]['error'],
-                    'size'     => (int)($_FILES[$fileKey]['size'] ?? 0),
-                ];
-            }
-        }
-
         $maxBytes = 250 * 1024 * 1024; // 250 MB
         $prefijo  = $historiaId > 0 ? ('exam_h' . $historiaId) : ('exam_ind_p' . $pacienteId);
         $rutasGuardadas = [];
 
-        foreach ($archivosParaProcesar as $idx => $item) {
-            if (($item['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
-                continue;
+        // 1. Procesar archivos enviados en Base64 dentro del JSON (sin multipart/form-data)
+        if (!empty($datos['archivos_base64']) && is_array($datos['archivos_base64'])) {
+            foreach ($datos['archivos_base64'] as $idx => $item) {
+                if (!is_array($item) || empty($item['data'])) {
+                    continue;
+                }
+                $nombreOrig = (string)($item['name'] ?? ('archivo_' . $idx . '.pdf'));
+                $b64 = (string)$item['data'];
+                if (strpos($b64, 'base64,') !== false) {
+                    $b64 = explode('base64,', $b64, 2)[1];
+                }
+                $binario = base64_decode($b64, true);
+                if ($binario === false || strlen($binario) === 0 || strlen($binario) > $maxBytes) {
+                    continue;
+                }
+
+                $ext = strtolower(pathinfo($nombreOrig, PATHINFO_EXTENSION) ?: 'pdf');
+                $extLimpia = preg_replace('/[^a-z0-9]/', '', $ext) ?: 'pdf';
+                $fileName = $prefijo . '_' . time() . '_' . $idx . '_' . mt_rand(100, 999) . '.' . $extLimpia;
+                $destino  = $uploadDir . $fileName;
+
+                if (file_put_contents($destino, $binario) !== false) {
+                    $rutasGuardadas[] = '/uploads/examenes/' . $fileName;
+                }
             }
-            if (($item['size'] ?? 0) > $maxBytes || empty($item['tmp_name'])) {
-                continue;
+        }
+
+        // 2. Respaldo para multipart/form-data tradicional ($_FILES)
+        if (!empty($_FILES)) {
+            $archivosParaProcesar = [];
+
+            if (isset($_FILES['archivos']) && is_array($_FILES['archivos']['name'])) {
+                $total = count($_FILES['archivos']['name']);
+                for ($i = 0; $i < $total; $i++) {
+                    $archivosParaProcesar[] = [
+                        'name'     => $_FILES['archivos']['name'][$i] ?? '',
+                        'tmp_name' => $_FILES['archivos']['tmp_name'][$i] ?? '',
+                        'error'    => $_FILES['archivos']['error'][$i] ?? UPLOAD_ERR_NO_FILE,
+                        'size'     => (int)($_FILES['archivos']['size'][$i] ?? 0),
+                    ];
+                }
+            } else {
+                $fileKey = isset($_FILES['archivo']) ? 'archivo' : (isset($_FILES['file']) ? 'file' : null);
+                if ($fileKey && isset($_FILES[$fileKey]['name'])) {
+                    $archivosParaProcesar[] = [
+                        'name'     => $_FILES[$fileKey]['name'],
+                        'tmp_name' => $_FILES[$fileKey]['tmp_name'],
+                        'error'    => $_FILES[$fileKey]['error'],
+                        'size'     => (int)($_FILES[$fileKey]['size'] ?? 0),
+                    ];
+                }
             }
 
-            $ext = strtolower(pathinfo((string)$item['name'], PATHINFO_EXTENSION) ?: 'pdf');
-            $extLimpia = preg_replace('/[^a-z0-9]/', '', $ext) ?: 'pdf';
-            $fileName = $prefijo . '_' . time() . '_' . $idx . '_' . mt_rand(100, 999) . '.' . $extLimpia;
-            $destino  = $uploadDir . $fileName;
+            foreach ($archivosParaProcesar as $idx => $item) {
+                if (($item['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+                    continue;
+                }
+                if (($item['size'] ?? 0) > $maxBytes || empty($item['tmp_name'])) {
+                    continue;
+                }
 
-            if (move_uploaded_file($item['tmp_name'], $destino)) {
-                $rutasGuardadas[] = '/uploads/examenes/' . $fileName;
+                $ext = strtolower(pathinfo((string)$item['name'], PATHINFO_EXTENSION) ?: 'pdf');
+                $extLimpia = preg_replace('/[^a-z0-9]/', '', $ext) ?: 'pdf';
+                $fileName = $prefijo . '_' . time() . '_m' . $idx . '_' . mt_rand(100, 999) . '.' . $extLimpia;
+                $destino  = $uploadDir . $fileName;
+
+                if (move_uploaded_file($item['tmp_name'], $destino)) {
+                    $rutasGuardadas[] = '/uploads/examenes/' . $fileName;
+                }
             }
         }
 
@@ -259,7 +284,7 @@ class ArchivoController {
 
     /**
      * POST /api/archivo/examenes
-     * Soporta application/json y multipart/form-data con múltiples archivos (hasta 250 MB).
+     * Soporta application/json (con o sin archivos_base64) y multipart/form-data.
      */
     public static function crearExamen($input = []) {
         try {
@@ -318,8 +343,8 @@ class ArchivoController {
                 return;
             }
 
-            // Procesar uno o varios archivos adjuntos (PDF, imágenes, documentos)
-            $rutasSubidas = self::guardarArchivosAdjuntos($historiaId, $pacienteId);
+            // Procesar uno o varios archivos adjuntos (Base64 en JSON o multipart/form-data)
+            $rutasSubidas = self::guardarArchivosAdjuntos($historiaId, $pacienteId, $datos);
             $archivoUrl = !empty($datos['archivo_adjunto_url']) ? trim((string)$datos['archivo_adjunto_url']) : null;
 
             if (count($rutasSubidas) === 1) {
