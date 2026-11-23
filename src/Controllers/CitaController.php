@@ -202,9 +202,6 @@ class CitaController {
 
             $whereSql = implode(" AND ", $condiciones);
 
-            // Ordenamiento inteligente:
-            // 1. Por fecha
-            // 2. Pacientes en_consulta primero, luego en_espera por numero_llegada ASC, luego el resto
             $sql = "SELECT 
                         c.*,
                         CONCAT(p.nombre, ' ', p.apellido) AS paciente_nombre,
@@ -291,10 +288,9 @@ class CitaController {
             $pdo = Database::conectar();
             self::asegurarEsquemaCola($pdo);
 
-            $medicoId = (int)$input['medico_id'];
+            $medicoId  = (int)$input['medico_id'];
             $fechaCita = trim((string)$input['fecha_cita']);
 
-            // Verificar capacidad y configuración del calendario
             $calStmt = $pdo->prepare("SELECT cupos_por_bloque, default_status, dias_config FROM gm_calendarios WHERE id = :id LIMIT 1");
             $calStmt->execute([':id' => (int)$input['calendario_id']]);
             $cal = $calStmt->fetch(PDO::FETCH_ASSOC);
@@ -305,16 +301,14 @@ class CitaController {
                 return;
             }
 
-            // Detectar si el día trabaja por Orden de Llegada o Hora Programada
             $tipoCitaDetectado = !empty($input['tipo_cita'])
                 ? trim((string)$input['tipo_cita'])
                 : self::detectarModalidadDia($cal['dias_config'] ?? null, $fechaCita);
 
-            $esOrdenLlegada = (stripos($tipoCitaDetectado, 'orden') !== false);
+            $esOrdenLlegada  = (stripos($tipoCitaDetectado, 'orden') !== false);
             $horaNormalizada = strlen($input['hora_cita']) === 5 ? $input['hora_cita'] . ':00' : $input['hora_cita'];
 
             if ($esOrdenLlegada) {
-                // En orden de llegada el límite de cupos aplica al día completo del calendario
                 $ocupStmt = $pdo->prepare("
                     SELECT COUNT(*) 
                     FROM gm_citas 
@@ -328,7 +322,7 @@ class CitaController {
                     ':cal'   => (int)$input['calendario_id'],
                     ':fecha' => $fechaCita
                 ]);
-                $ocupados = (int)$ocupStmt->fetchColumn();
+                $ocupados    = (int)$ocupStmt->fetchColumn();
                 $limiteCupos = max(1, (int)$cal['cupos_por_bloque']);
 
                 if ($ocupados >= $limiteCupos) {
@@ -337,7 +331,6 @@ class CitaController {
                     return;
                 }
             } else {
-                // En hora programada el límite de cupos aplica por bloque horario
                 $ocupStmt = $pdo->prepare("
                     SELECT COUNT(*) 
                     FROM gm_citas 
@@ -362,7 +355,6 @@ class CitaController {
 
             $estadoInicial = $input['estado_cita'] ?? ($cal['default_status'] ?: 'reservada');
 
-            // Si los servicios vienen como arreglo sin 'procedimiento', construir el texto separado por coma
             $procedimiento = trim((string)($input['procedimiento'] ?? ''));
             if ($procedimiento === '' && !empty($input['servicios']) && is_array($input['servicios'])) {
                 $nombres = [];
@@ -390,7 +382,6 @@ class CitaController {
                 $totalUsd = self::calcularMontoServicios($pdo, $medicoId, $procedimiento, $input['servicios'] ?? null);
             }
 
-            // Si la cita nace directamente 'en_espera' (ej. recepción marca llegada al momento), asignar turno real de una vez
             $numeroLlegada = 0;
             if ($estadoInicial === 'en_espera') {
                 $maxStmt = $pdo->prepare("SELECT COALESCE(MAX(numero_llegada), 0) FROM gm_citas WHERE medico_id = :med AND fecha_cita = :fecha");
@@ -466,7 +457,6 @@ class CitaController {
                 $campos[] = "estado_cita = :estado";
                 $params[':estado'] = $nuevoEstado;
 
-                // Si pasa a 'en_espera' y aún no tiene numero_llegada, asignarlo automáticamente
                 if ($nuevoEstado === 'en_espera' && (int)($citaActual['numero_llegada'] ?? 0) <= 0) {
                     $maxStmt = $pdo->prepare("SELECT COALESCE(MAX(numero_llegada), 0) FROM gm_citas WHERE medico_id = :med AND fecha_cita = :fecha");
                     $maxStmt->execute([
@@ -554,7 +544,6 @@ class CitaController {
             ];
         }
 
-        // Buscar cita del paciente para HOY con ese médico
         $stmt = $pdo->prepare("
             SELECT c.*, CONCAT(p.nombre, ' ', p.apellido) AS paciente_nombre
             FROM gm_citas c
@@ -588,7 +577,6 @@ class CitaController {
             $upd->execute([':turno' => $turnoAsignado, ':id' => $cita['id']]);
         }
 
-        // Calcular pacientes por delante en sala de espera
         $delanteStmt = $pdo->prepare("
             SELECT COUNT(*) 
             FROM gm_citas 
@@ -628,7 +616,6 @@ class CitaController {
 
     /**
      * POST /api/citas/check-in-qr
-     * Recibe: { "medico_id": 1, "paciente_id": 5 } o { "medico_id": 1, "cedula": "12345678" }
      */
     public static function checkInQr($input) {
         try {
@@ -658,8 +645,7 @@ class CitaController {
     }
 
     /**
-     * GET /marcar-llegada?medico_id=X (y opcional &paciente_id=Y)
-     * Página web móvil responsiva para cuando el paciente escanea el QR con la cámara nativa de su teléfono.
+     * GET /marcar-llegada?medico_id=X o ?wpgm_marcar_llegada=1&medico_id=X
      */
     public static function renderizarCheckInWeb() {
         header("Content-Type: text/html; charset=utf-8");
