@@ -164,8 +164,8 @@ class PresupuestoPdfGenerator {
         }
 
         $medicoId = (int)$pres['medico_id'];
-        $stmtMed = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE user_id = :uid OR id = :uid LIMIT 1");
-        $stmtMed->execute([':uid' => $medicoId]);
+        $stmtMed = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE user_id = :uid1 OR id = :uid2 LIMIT 1");
+        $stmtMed->execute([':uid1' => $medicoId, ':uid2' => $medicoId]);
         $medico = $stmtMed->fetch(PDO::FETCH_ASSOC) ?: [];
         $realMedicoId = !empty($medico['user_id']) ? (int)$medico['user_id'] : $medicoId;
 
