@@ -9,20 +9,14 @@ header("Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization, Accept, X-Requested-With");
 
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
-    http_response_code(200);
-    exit;
-}
-
-header("Content-Type: application/json; charset=utf-8");
-
-
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     if (ob_get_length()) {
         ob_clean();
     }
     http_response_code(200);
     exit;
 }
+
+header("Content-Type: application/json; charset=utf-8");
 
 set_exception_handler(function ($e) {
     if (ob_get_length()) {
@@ -62,6 +56,7 @@ require_once __DIR__ . '/../src/Controllers/AuthController.php';
 require_once __DIR__ . '/../src/Controllers/CalendarioController.php';
 require_once __DIR__ . '/../src/Controllers/CitaController.php';
 require_once __DIR__ . '/../src/Controllers/HistoriaController.php';
+require_once __DIR__ . '/../src/Controllers/ArchivoController.php';
 require_once __DIR__ . '/../src/Controllers/FinanzaServicioController.php';
 require_once __DIR__ . '/../src/Controllers/AjustesMedicoController.php';
 
@@ -72,6 +67,7 @@ use App\Controllers\AuthController;
 use App\Controllers\CalendarioController;
 use App\Controllers\CitaController;
 use App\Controllers\HistoriaController;
+use App\Controllers\ArchivoController;
 use App\Controllers\FinanzaServicioController;
 use App\Controllers\AjustesMedicoController;
 use App\Documentos\ValidadorInformePublico;
@@ -127,6 +123,9 @@ if ($uri === '/' || $uri === '/api') {
             "GET /api/historias/pdf",
             "GET /validar-informe",
             "PUT /api/examenes",
+            "GET /api/archivo",
+            "POST /api/archivo/examenes",
+            "PUT /api/archivo/examenes",
             "GET /api/servicios",
             "POST /api/servicios",
             "POST /api/servicios/estado",
@@ -251,6 +250,15 @@ if ($uri === '/' || $uri === '/api') {
         ob_clean();
     }
     ValidadorInformePublico::renderizar();
+
+} elseif ($uri === '/api/archivo' && $method === 'GET') {
+    ArchivoController::listar();
+
+} elseif ($uri === '/api/archivo/examenes' && $method === 'POST') {
+    ArchivoController::crearExamen($input);
+
+} elseif ($uri === '/api/archivo/examenes' && $method === 'PUT') {
+    ArchivoController::actualizarExamen($input);
 
 } elseif ($uri === '/api/servicios' && $method === 'GET') {
     FinanzaServicioController::listarServicios();
