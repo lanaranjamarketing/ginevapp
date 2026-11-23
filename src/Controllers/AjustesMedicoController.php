@@ -113,25 +113,31 @@ class AjustesMedicoController {
                 }
             }
 
+            $inicioFactura = max(1, intval($metas['inicio_factura'] ?? ($metas['numero_control'] ?? 1)));
+            $inicioPresupuesto = max(1, intval($metas['inicio_presupuesto'] ?? 1));
+
             $perfilCompleto = array_merge($perfilBase, [
-                'user_id'          => $realMedicoId,
-                'avatar_url'       => $avatarUrl,
-                'tagline'          => !empty($perfilBase['tagline']) ? $perfilBase['tagline'] : ($metas['tagline'] ?? ''),
-                'bio'              => $metas['bio'] ?? '',
-                'redes_sociales'   => $redesLista,
-                'segundo_nombre'   => !empty($perfilBase['segundo_nombre']) ? $perfilBase['segundo_nombre'] : ($metas['segundo_nombre'] ?? ''),
-                'segundo_apellido' => !empty($perfilBase['segundo_apellido']) ? $perfilBase['segundo_apellido'] : ($metas['segundo_apellido'] ?? ''),
-                'ocupacion'        => !empty($perfilBase['ocupacion']) ? $perfilBase['ocupacion'] : ($metas['ocupacion'] ?? 'Médico Cirujano'),
-                'universidad'      => !empty($perfilBase['universidad']) ? $perfilBase['universidad'] : ($metas['universidad'] ?? ''),
-                'especialidad'     => !empty($perfilBase['especialidad']) ? $perfilBase['especialidad'] : ($metas['especialidad'] ?? ''),
-                'mpps'             => !empty($perfilBase['mpps']) ? $perfilBase['mpps'] : ($metas['mpps'] ?? ''),
-                'cmm'              => !empty($perfilBase['cmm']) ? $perfilBase['cmm'] : ($metas['cmm'] ?? ''),
-                'rif_tipo'         => $metas['rif_tipo'] ?? 'V',
-                'rif_num'          => $metas['rif_num'] ?? '',
-                'pais_fiscal'      => !empty($perfilBase['pais']) ? $perfilBase['pais'] : ($metas['pais_fiscal'] ?? 'Venezuela'),
-                'estado_fiscal'    => !empty($perfilBase['estado']) ? $perfilBase['estado'] : ($metas['estado_fiscal'] ?? ''),
-                'direccion_fiscal' => !empty($perfilBase['direccion_detalle']) ? $perfilBase['direccion_detalle'] : ($metas['direccion_fiscal'] ?? ''),
-                'sedes'            => $sedes
+                'user_id'            => $realMedicoId,
+                'avatar_url'         => $avatarUrl,
+                'tagline'            => !empty($perfilBase['tagline']) ? $perfilBase['tagline'] : ($metas['tagline'] ?? ''),
+                'bio'                => $metas['bio'] ?? '',
+                'redes_sociales'     => $redesLista,
+                'segundo_nombre'     => !empty($perfilBase['segundo_nombre']) ? $perfilBase['segundo_nombre'] : ($metas['segundo_nombre'] ?? ''),
+                'segundo_apellido'   => !empty($perfilBase['segundo_apellido']) ? $perfilBase['segundo_apellido'] : ($metas['segundo_apellido'] ?? ''),
+                'ocupacion'          => !empty($perfilBase['ocupacion']) ? $perfilBase['ocupacion'] : ($metas['ocupacion'] ?? 'Médico Cirujano'),
+                'universidad'        => !empty($perfilBase['universidad']) ? $perfilBase['universidad'] : ($metas['universidad'] ?? ''),
+                'especialidad'       => !empty($perfilBase['especialidad']) ? $perfilBase['especialidad'] : ($metas['especialidad'] ?? ''),
+                'mpps'               => !empty($perfilBase['mpps']) ? $perfilBase['mpps'] : ($metas['mpps'] ?? ''),
+                'cmm'                => !empty($perfilBase['cmm']) ? $perfilBase['cmm'] : ($metas['cmm'] ?? ''),
+                'rif_tipo'           => $metas['rif_tipo'] ?? 'V',
+                'rif_num'            => $metas['rif_num'] ?? '',
+                'pais_fiscal'        => !empty($perfilBase['pais']) ? $perfilBase['pais'] : ($metas['pais_fiscal'] ?? 'Venezuela'),
+                'estado_fiscal'      => !empty($perfilBase['estado']) ? $perfilBase['estado'] : ($metas['estado_fiscal'] ?? ''),
+                'direccion_fiscal'   => !empty($perfilBase['direccion_detalle']) ? $perfilBase['direccion_detalle'] : ($metas['direccion_fiscal'] ?? ''),
+                'inicio_factura'     => $inicioFactura,
+                'numero_control'     => $inicioFactura,
+                'inicio_presupuesto' => $inicioPresupuesto,
+                'sedes'              => $sedes
             ]);
 
             $stmtCal = $pdo->prepare("SELECT * FROM gm_calendarios WHERE medico_id = ? ORDER BY id DESC");
@@ -218,7 +224,6 @@ class AjustesMedicoController {
 
             $archivo = $_FILES['avatar'];
 
-            // Validar imagen usando getimagesize (nativo en PHP, no requiere extensión fileinfo)
             $infoImagen = @getimagesize($archivo['tmp_name']);
             if ($infoImagen === false) {
                 ob_end_clean();
@@ -252,7 +257,6 @@ class AjustesMedicoController {
             self::asegurarTablasAuxiliares($pdo);
             $medicoId = self::resolverMedicoId($pdo, $idParam);
 
-            // Crear carpeta pública public/uploads/avatars/
             $dirDestino = __DIR__ . '/../../public/uploads/avatars';
             if (!is_dir($dirDestino)) {
                 @mkdir($dirDestino, 0777, true);
@@ -262,7 +266,6 @@ class AjustesMedicoController {
                 @chmod($dirDestino, 0777);
             }
 
-            // Eliminar avatar previo local si existía (soporta tanto URL antigua como query ?file=)
             $metas = self::obtenerMeta($pdo, $medicoId);
             if (!empty($metas['avatar_url'])) {
                 $archivoViejo = '';
@@ -415,6 +418,10 @@ class AjustesMedicoController {
                     $estado  = trim($input['estado_fiscal'] ?? '');
                     $dir     = trim($input['direccion_fiscal'] ?? '');
 
+                    // Correlativos independientes por médico (inicio_factura == numero_control)
+                    $inicioFactura     = max(1, intval($input['inicio_factura'] ?? ($input['numero_control'] ?? 1)));
+                    $inicioPresupuesto = max(1, intval($input['inicio_presupuesto'] ?? 1));
+
                     $stmt = $pdo->prepare("
                         UPDATE gm_usuarios_extendidos
                         SET pais = ?, estado = ?, direccion_detalle = ?
@@ -427,7 +434,10 @@ class AjustesMedicoController {
                     self::guardarMeta($pdo, $medicoId, 'pais_fiscal', $pais);
                     self::guardarMeta($pdo, $medicoId, 'estado_fiscal', $estado);
                     self::guardarMeta($pdo, $medicoId, 'direccion_fiscal', $dir);
-                    $msg = "Datos fiscales actualizados.";
+                    self::guardarMeta($pdo, $medicoId, 'inicio_factura', (string)$inicioFactura);
+                    self::guardarMeta($pdo, $medicoId, 'numero_control', (string)$inicioFactura);
+                    self::guardarMeta($pdo, $medicoId, 'inicio_presupuesto', (string)$inicioPresupuesto);
+                    $msg = "Datos fiscales y correlativos actualizados.";
                     break;
 
                 case 'sedes':

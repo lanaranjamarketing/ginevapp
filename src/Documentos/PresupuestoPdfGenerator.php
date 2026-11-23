@@ -55,7 +55,40 @@ class PresupuestoPdfGenerator {
         return 'CARACAS';
     }
 
-   public static function asegurarTablaPresupuestos(PDO $pdo): void {
+    private static function obtenerMetasMedico(PDO $pdo, int $medicoId): array {
+        $metas = [];
+        try {
+            $stmt = $pdo->prepare("SELECT meta_key, meta_value FROM gm_medico_meta WHERE medico_id = ?");
+            $stmt->execute([$medicoId]);
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $metas[$row['meta_key']] = $row['meta_value'];
+            }
+        } catch (Exception $ignored) {}
+        return $metas;
+    }
+
+    /**
+     * Calcula el correlativo independiente de presupuesto para cada médico:
+     * Toma MAX(numero_presupuesto) de ese mismo médico + 1 (nunca menor al inicio_presupuesto configurado).
+     */
+    private static function obtenerSiguienteNumeroPresupuestoMedico(PDO $pdo, int $medicoId, array $metas): string {
+        $inicioConfigurado = max(1, intval($metas['inicio_presupuesto'] ?? 1));
+
+        $stmtMax = $pdo->prepare("
+            SELECT COALESCE(MAX(CAST(numero_presupuesto AS UNSIGNED)), 0)
+            FROM gm_presupuestos
+            WHERE medico_id = :med
+              AND numero_presupuesto IS NOT NULL
+              AND numero_presupuesto <> ''
+        ");
+        $stmtMax->execute([':med' => $medicoId]);
+        $maxActual = (int)$stmtMax->fetchColumn();
+
+        $siguiente = ($maxActual >= $inicioConfigurado) ? ($maxActual + 1) : $inicioConfigurado;
+        return str_pad((string)$siguiente, 6, '0', STR_PAD_LEFT);
+    }
+
+    public static function asegurarTablaPresupuestos(PDO $pdo): void {
         try {
             $pdo->exec("
                 CREATE TABLE IF NOT EXISTS gm_presupuestos (
@@ -83,7 +116,6 @@ class PresupuestoPdfGenerator {
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             ");
 
-            // Migración automática si la tabla ya existía sin estatus o finanza_id
             $cols = $pdo->query("SHOW COLUMNS FROM gm_presupuestos")->fetchAll(PDO::FETCH_COLUMN);
             if (!in_array('estatus', $cols, true)) {
                 $pdo->exec("ALTER TABLE gm_presupuestos ADD COLUMN estatus VARCHAR(20) NOT NULL DEFAULT 'pendiente'");
@@ -95,7 +127,7 @@ class PresupuestoPdfGenerator {
     }
 
     /**
-     * Genera el documento HTML/PDF del Presupuesto Médico con numeración correlativa,
+     * Genera el documento HTML/PDF del Presupuesto Médico con numeración correlativa independiente por médico,
      * validez de 3 días, QR y colores dinámicos del tema activo.
      */
     public static function generarPresupuestoPdf(int $presupuestoId, ?PDO $pdoExterno = null, array $temaOverride = []): array {
@@ -121,9 +153,13 @@ class PresupuestoPdfGenerator {
             return ['html' => '', 'url' => '', 'numero_presupuesto' => ''];
         }
 
-        $stmtMed = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE user_id = :uid LIMIT 1");
-        $stmtMed->execute([':uid' => (int)$pres['medico_id']]);
+        $medicoId = (int)$pres['medico_id'];
+        $stmtMed = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE user_id = :uid OR id = :uid LIMIT 1");
+        $stmtMed->execute([':uid' => $medicoId]);
         $medico = $stmtMed->fetch(PDO::FETCH_ASSOC) ?: [];
+        $realMedicoId = !empty($medico['user_id']) ? (int)$medico['user_id'] : $medicoId;
+
+        $metas = self::obtenerMetasMedico($pdo, $realMedicoId);
 
         $sexoMed = strtolower(trim((string)($medico['sexo'] ?? '')));
         $prefijoDr = ($sexoMed === 'femenino' || $sexoMed === 'f') ? 'DRA.' : 'DR.';
@@ -139,10 +175,10 @@ class PresupuestoPdfGenerator {
         $tituloMedicoMayus = mb_strtoupper($prefijoDr . ' ' . $nombreMedCompleto, 'UTF-8');
         $tituloMedicoFirma = $prefijoDrFirma . ' ' . $nombreMedCompleto;
 
-        $especialidad = trim((string)($medico['especialidad'] ?? $medico['especialidad_medica'] ?? 'MEDICINA ESPECIALIZADA'));
+        $especialidad = trim((string)($medico['especialidad'] ?? $medico['especialidad_medica'] ?? ($metas['especialidad'] ?? 'MEDICINA ESPECIALIZADA')));
         $especialidadMayus = mb_strtoupper($especialidad, 'UTF-8');
 
-        $domicilioMedico = trim((string)($medico['direccion_detalle'] ?? ''));
+        $domicilioMedico = trim((string)($medico['direccion_detalle'] ?? ($metas['direccion_fiscal'] ?? '')));
         if ($domicilioMedico === '') {
             $domicilioMedico = trim(($medico['estado'] ?? '') . ', ' . ($medico['pais'] ?? ''), ', ');
         }
@@ -152,11 +188,11 @@ class PresupuestoPdfGenerator {
         $telefonoMedico = trim((string)($medico['whatsapp'] ?? $medico['telefono'] ?? 'No especificado'));
         $lugarEmision   = self::extraerLugarEmision($medico);
 
-        $mpps = trim((string)($medico['mpps'] ?? $medico['registro_mpps'] ?? '—'));
-        $cmm  = trim((string)($medico['cmg'] ?? $medico['cmm'] ?? $medico['colegio_medico'] ?? '—'));
+        $mpps = trim((string)($medico['mpps'] ?? ($metas['mpps'] ?? '—')));
+        $cmm  = trim((string)($medico['cmg'] ?? $medico['cmm'] ?? ($metas['cmm'] ?? '—')));
 
-        $rifTipo = trim((string)($medico['rif_tipo'] ?? ''));
-        $rifNum  = trim((string)($medico['rif_num'] ?? $medico['rif'] ?? ''));
+        $rifTipo = trim((string)($medico['rif_tipo'] ?? ($metas['rif_tipo'] ?? '')));
+        $rifNum  = trim((string)($medico['rif_num'] ?? $medico['rif'] ?? ($metas['rif_num'] ?? '')));
         if ($rifNum !== '') {
             $rifMedico = (strpos($rifNum, '-') !== false || $rifTipo === '') ? $rifNum : ($rifTipo . '-' . $rifNum);
         } elseif (!empty($medico['cedula'])) {
@@ -173,13 +209,15 @@ class PresupuestoPdfGenerator {
         $colorSuave = self::aclararHex($colorPrimario, 0.93);
         $colorBorde = self::aclararHex($colorPrimario, 0.65);
 
+        // Número de presupuesto independiente por médico
         $numeroPres = !empty($pres['numero_presupuesto'])
-            ? trim((string)$pres['numero_presupuesto'])
-            : str_pad((string)$presupuestoId, 6, '0', STR_PAD_LEFT);
+            ? str_pad(trim((string)$pres['numero_presupuesto']), 6, '0', STR_PAD_LEFT)
+            : self::obtenerSiguienteNumeroPresupuestoMedico($pdo, $realMedicoId, $metas);
         $numeroControl = 'PR-' . $numeroPres;
 
         $baseUrl = self::baseUrlPublica();
         $urlValidacion = $baseUrl . '/validar-presupuesto?presupuesto=' . urlencode($numeroPres)
+            . '&med=' . $realMedicoId
             . '&cp=' . urlencode($colorPrimario);
         $urlQrImagen = 'https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=' . urlencode($urlValidacion);
 
@@ -573,7 +611,7 @@ class PresupuestoPdfGenerator {
             @mkdir($dir, 0755, true);
         }
 
-        $nombreArchivo = 'presupuesto-' . $presupuestoId . '-' . time() . '.html';
+        $nombreArchivo = 'presupuesto-' . $realMedicoId . '-' . $numeroPres . '-' . time() . '.html';
         @file_put_contents($dir . $nombreArchivo, $html);
         $urlArchivo = $baseUrl . '/uploads/presupuestos_medicos/' . $nombreArchivo;
 
@@ -592,11 +630,12 @@ class PresupuestoPdfGenerator {
     }
 
     /**
-     * GET /validar-presupuesto?presupuesto=000001
+     * GET /validar-presupuesto?presupuesto=000001&med=12
      */
     public static function renderizarValidadorPublico(): void {
         header('Content-Type: text/html; charset=utf-8');
         $numRaw = isset($_GET['presupuesto']) ? trim((string)$_GET['presupuesto']) : '';
+        $medId  = isset($_GET['med']) ? (int)$_GET['med'] : 0;
         $colorPrimario = self::normalizarHex($_GET['cp'] ?? null, '#B81D65');
         $colorFondo    = self::aclararHex($colorPrimario, 0.95);
         $colorBadgeBg  = self::aclararHex($colorPrimario, 0.88);
@@ -614,9 +653,16 @@ class PresupuestoPdfGenerator {
         try {
             $pdo = Database::conectar();
             self::asegurarTablaPresupuestos($pdo);
-            $idLimpio = (int)ltrim($numRaw, '0');
-            $stmt = $pdo->prepare("SELECT * FROM gm_presupuestos WHERE id = :id OR numero_presupuesto = :num LIMIT 1");
-            $stmt->execute([':id' => $idLimpio, ':num' => $numRaw]);
+            $numPad = str_pad($numRaw, 6, '0', STR_PAD_LEFT);
+
+            if ($medId > 0) {
+                $stmt = $pdo->prepare("SELECT * FROM gm_presupuestos WHERE medico_id = :med AND (numero_presupuesto = :num OR numero_presupuesto = :numPad) LIMIT 1");
+                $stmt->execute([':med' => $medId, ':num' => $numRaw, ':numPad' => $numPad]);
+            } else {
+                $idLimpio = (int)ltrim($numRaw, '0');
+                $stmt = $pdo->prepare("SELECT * FROM gm_presupuestos WHERE numero_presupuesto = :num OR numero_presupuesto = :numPad OR id = :id LIMIT 1");
+                $stmt->execute([':num' => $numRaw, ':numPad' => $numPad, ':id' => $idLimpio]);
+            }
             $pres = $stmt->fetch(PDO::FETCH_ASSOC);
 
             echo '<div style="max-width:600px; margin:32px auto; padding:30px; background:#ffffff; border:1px solid #e2e8f0; border-radius:14px; font-family:\'Helvetica Neue\', Helvetica, Arial, sans-serif;">';
@@ -628,7 +674,7 @@ class PresupuestoPdfGenerator {
             } else {
                 $hoy = date('Y-m-d');
                 $vigente = ($hoy <= (string)$pres['fecha_vencimiento']);
-                $numFmt = !empty($pres['numero_presupuesto']) ? $pres['numero_presupuesto'] : str_pad((string)$pres['id'], 6, '0', STR_PAD_LEFT);
+                $numFmt = !empty($pres['numero_presupuesto']) ? str_pad((string)$pres['numero_presupuesto'], 6, '0', STR_PAD_LEFT) : str_pad((string)$pres['id'], 6, '0', STR_PAD_LEFT);
 
                 echo '<div style="text-align:center; border-bottom:2px solid ' . $esc($colorPrimario) . '; padding-bottom:18px; margin-bottom:18px;">
                         <div style="display:inline-block; background:' . ($vigente ? $esc($colorBadgeBg) : '#fee2e2') . '; color:' . ($vigente ? $esc($colorPrimario) : '#dc2626') . '; padding:6px 16px; border-radius:20px; font-weight:bold; font-size:13px; margin-bottom:10px;">
