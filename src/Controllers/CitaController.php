@@ -37,6 +37,36 @@ class CitaController {
     }
 
     /**
+     * Obtiene la paleta de colores dinámica configurada por el administrador en gm_configuracion.
+     */
+    private static function obtenerPaletaTema(PDO $pdo): array {
+        $paleta = [
+            'theme_primary'        => '#C2186B',
+            'theme_primary_dark'   => '#4A0E2E',
+            'theme_secondary'      => '#F45D5D',
+            'theme_background'     => '#FDF6F8',
+            'theme_surface'        => '#FFFFFF',
+            'theme_text_primary'   => '#2D1422',
+            'theme_text_secondary' => '#7A5C6B',
+        ];
+
+        try {
+            $stmt = $pdo->query("SELECT `clave`, `valor` FROM `gm_configuracion` WHERE `clave` LIKE 'theme_%'");
+            if ($stmt) {
+                while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                    $clave = trim((string)($row['clave'] ?? ''));
+                    $valor = trim((string)($row['valor'] ?? ''));
+                    if ($clave !== '' && preg_match('/^#[0-9A-Fa-f]{6}$/', $valor)) {
+                        $paleta[$clave] = $valor;
+                    }
+                }
+            }
+        } catch (Exception $e) {}
+
+        return $paleta;
+    }
+
+    /**
      * Determina la modalidad ('Orden de Llegada' o 'Hora Programada') de un calendario
      * para una fecha específica leyendo dias_config.
      */
@@ -646,6 +676,7 @@ class CitaController {
 
     /**
      * GET /marcar-llegada?medico_id=X o ?wpgm_marcar_llegada=1&medico_id=X
+     * Hereda dinámicamente los colores del tema activo configurado por el administrador en gm_configuracion.
      */
     public static function renderizarCheckInWeb() {
         header("Content-Type: text/html; charset=utf-8");
@@ -653,7 +684,17 @@ class CitaController {
         $pacienteId = (int)($_GET['paciente_id'] ?? $_GET['pac'] ?? 0);
         $cedulaPost = trim((string)($_POST['cedula'] ?? ''));
 
-        $pdo = Database::conectar();
+        $pdo    = Database::conectar();
+        $paleta = self::obtenerPaletaTema($pdo);
+
+        $cPrimary     = htmlspecialchars($paleta['theme_primary'], ENT_QUOTES, 'UTF-8');
+        $cPrimaryDark = htmlspecialchars($paleta['theme_primary_dark'], ENT_QUOTES, 'UTF-8');
+        $cSecondary   = htmlspecialchars($paleta['theme_secondary'], ENT_QUOTES, 'UTF-8');
+        $cBackground  = htmlspecialchars($paleta['theme_background'], ENT_QUOTES, 'UTF-8');
+        $cSurface     = htmlspecialchars($paleta['theme_surface'], ENT_QUOTES, 'UTF-8');
+        $cTextPrimary = htmlspecialchars($paleta['theme_text_primary'], ENT_QUOTES, 'UTF-8');
+        $cTextSec     = htmlspecialchars($paleta['theme_text_secondary'], ENT_QUOTES, 'UTF-8');
+
         $nombreMedico = 'Consultorio Médico';
         $especialidad = '';
 
@@ -679,19 +720,133 @@ class CitaController {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Sala de Espera - Check-in QR</title>
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f3f6fa; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
-  .card { background: #fff; border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); max-width: 420px; width: 100%; padding: 28px; text-align: center; }
-  h1 { font-size: 21px; color: #1a2b49; margin: 0 0 6px; }
-  .sub { font-size: 14px; color: #5c6f8c; margin-bottom: 22px; }
-  input { width: 100%; box-sizing: border-box; padding: 14px; font-size: 16px; border: 1.5px solid #cbd5e1; border-radius: 10px; margin-bottom: 14px; text-align: center; }
-  button { width: 100%; padding: 14px; font-size: 16px; font-weight: bold; background: #0d6efd; color: #fff; border: none; border-radius: 10px; cursor: pointer; }
-  .turno-box { background: #ecfdf5; border: 2px solid #10b981; border-radius: 14px; padding: 20px; margin-top: 10px; }
-  .turno-num { font-size: 48px; font-weight: 800; color: #047857; line-height: 1.1; margin: 8px 0; }
-  .err { background: #fef2f2; border: 1px solid #ef4444; color: #b91c1c; padding: 14px; border-radius: 10px; margin-bottom: 14px; font-size: 14px; }
+  :root {
+    --theme-primary: ' . $cPrimary . ';
+    --theme-primary-dark: ' . $cPrimaryDark . ';
+    --theme-secondary: ' . $cSecondary . ';
+    --theme-background: ' . $cBackground . ';
+    --theme-surface: ' . $cSurface . ';
+    --theme-text-primary: ' . $cTextPrimary . ';
+    --theme-text-secondary: ' . $cTextSec . ';
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background-color: var(--theme-background);
+    color: var(--theme-text-primary);
+    margin: 0;
+    padding: 20px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+  }
+  .card {
+    background-color: var(--theme-surface);
+    border-radius: 18px;
+    border-top: 6px solid var(--theme-primary);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+    max-width: 420px;
+    width: 100%;
+    padding: 30px 26px;
+    text-align: center;
+  }
+  .badge-brand {
+    display: inline-block;
+    background-color: color-mix(in srgb, var(--theme-primary) 12%, transparent);
+    color: var(--theme-primary);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    padding: 5px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 22px;
+    color: var(--theme-text-primary);
+    margin: 0 0 6px;
+    font-weight: 800;
+  }
+  .sub {
+    font-size: 14px;
+    color: var(--theme-text-secondary);
+    margin-bottom: 22px;
+  }
+  .desc {
+    font-size: 14px;
+    color: var(--theme-text-primary);
+    margin-bottom: 14px;
+    line-height: 1.45;
+  }
+  input {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    background-color: var(--theme-background);
+    color: var(--theme-text-primary);
+    border: 1.8px solid color-mix(in srgb, var(--theme-primary) 30%, #cbd5e1);
+    border-radius: 12px;
+    margin-bottom: 14px;
+    text-align: center;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+  input:focus {
+    outline: none;
+    border-color: var(--theme-primary);
+    background-color: var(--theme-surface);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-primary) 18%, transparent);
+  }
+  button {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    font-weight: 700;
+    background-color: var(--theme-primary);
+    color: #ffffff;
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    box-shadow: 0 4px 14px color-mix(in srgb, var(--theme-primary) 32%, transparent);
+    transition: background-color 0.2s ease, transform 0.1s ease;
+  }
+  button:hover {
+    background-color: var(--theme-primary-dark);
+  }
+  button:active {
+    transform: scale(0.99);
+  }
+  .turno-box {
+    background-color: var(--theme-background);
+    border: 2px solid var(--theme-primary);
+    border-radius: 16px;
+    padding: 20px;
+    margin-top: 10px;
+  }
+  .turno-num {
+    font-size: 48px;
+    font-weight: 900;
+    color: var(--theme-primary);
+    line-height: 1.1;
+    margin: 8px 0;
+  }
+  .err {
+    background-color: color-mix(in srgb, var(--theme-secondary) 12%, #ffffff);
+    border: 1.5px solid var(--theme-secondary);
+    color: var(--theme-primary-dark);
+    padding: 14px;
+    border-radius: 12px;
+    margin-bottom: 16px;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.4;
+  }
 </style>
 </head>
 <body>
 <div class="card">
+  <div class="badge-brand">GinevApp • Sala de Espera</div>
   <h1>' . htmlspecialchars($nombreMedico) . '</h1>
   <div class="sub">' . htmlspecialchars($especialidad ?: 'Registro de Llegada a Consulta') . '</div>';
 
@@ -699,19 +854,19 @@ class CitaController {
             echo '<div class="err">Código QR inválido: falta el identificador del médico.</div>';
         } elseif ($resultado !== null && $resultado['status'] === 'success') {
             echo '<div class="turno-box">
-                    <div style="font-size:14px;color:#065f46;font-weight:600;">¡LLEGADA CONFIRMADA!</div>
-                    <div style="font-size:16px;color:#1f2937;margin-top:4px;">' . htmlspecialchars($resultado['paciente_nombre']) . '</div>
-                    <div style="font-size:12px;color:#4b5563;margin-top:12px;">SU TURNO EN SALA DE ESPERA ES</div>
+                    <div style="font-size:13px;color:var(--theme-primary-dark);font-weight:700;letter-spacing:0.4px;">¡LLEGADA CONFIRMADA!</div>
+                    <div style="font-size:16px;color:var(--theme-text-primary);font-weight:600;margin-top:4px;">' . htmlspecialchars($resultado['paciente_nombre']) . '</div>
+                    <div style="font-size:11px;color:var(--theme-text-secondary);margin-top:12px;font-weight:600;">SU TURNO EN SALA DE ESPERA ES</div>
                     <div class="turno-num">#' . (int)$resultado['numero_turno'] . '</div>
-                    <div style="font-size:14px;color:#374151;">Pacientes delante: <strong>' . (int)$resultado['pacientes_delante'] . '</strong></div>
-                    <div style="font-size:14px;color:#374151;margin-top:4px;">Tiempo estimado: <strong>' . (int)$resultado['tiempo_estimado_min'] . ' min</strong></div>
+                    <div style="font-size:14px;color:var(--theme-text-primary);">Pacientes delante: <strong>' . (int)$resultado['pacientes_delante'] . '</strong></div>
+                    <div style="font-size:14px;color:var(--theme-text-primary);margin-top:4px;">Tiempo estimado: <strong>' . (int)$resultado['tiempo_estimado_min'] . ' min</strong></div>
                   </div>';
         } else {
             if ($resultado !== null && $resultado['status'] === 'error') {
                 echo '<div class="err">' . htmlspecialchars($resultado['mensaje']) . '</div>';
             }
             echo '<form method="POST">
-                    <p style="font-size:14px;color:#334155;margin-bottom:14px;">Ingresa tu número de cédula para anunciar tu llegada y asignar tu turno:</p>
+                    <p class="desc">Ingresa tu número de cédula para anunciar tu llegada y asignar tu turno:</p>
                     <input type="text" name="cedula" placeholder="Ej. 18456789" required autofocus>
                     <button type="submit">Anunciar mi Llegada</button>
                   </form>';
