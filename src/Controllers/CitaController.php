@@ -8,6 +8,68 @@ use Exception;
 class CitaController {
 
     /**
+     * Asegura que existan las columnas y tablas necesarias para cola y check-in QR.
+     */
+    private static function asegurarEsquemaCola(PDO $pdo): void {
+        try {
+            $cols = $pdo->query("SHOW COLUMNS FROM gm_citas")->fetchAll(PDO::FETCH_COLUMN);
+            if (!in_array('tipo_cita', $cols, true)) {
+                $pdo->exec("ALTER TABLE gm_citas ADD COLUMN tipo_cita VARCHAR(50) DEFAULT 'Hora Programada'");
+            }
+            if (!in_array('numero_llegada', $cols, true)) {
+                $pdo->exec("ALTER TABLE gm_citas ADD COLUMN numero_llegada INT DEFAULT 0");
+            }
+        } catch (Exception $e) {}
+
+        try {
+            $pdo->exec("
+                CREATE TABLE IF NOT EXISTS gm_tiempo_atencion (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    medico_id INT NOT NULL,
+                    cita_id INT NOT NULL,
+                    hora_inicio DATETIME NOT NULL,
+                    hora_fin DATETIME NULL,
+                    duracion_minutos INT DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            ");
+        } catch (Exception $e) {}
+    }
+
+    /**
+     * Determina la modalidad ('Orden de Llegada' o 'Hora Programada') de un calendario
+     * para una fecha específica leyendo dias_config.
+     */
+    private static function detectarModalidadDia(?string $diasConfigJson, string $fechaCita): string {
+        if (!$diasConfigJson) {
+            return 'Hora Programada';
+        }
+        $cfg = json_decode($diasConfigJson, true);
+        if (!is_array($cfg)) {
+            return 'Hora Programada';
+        }
+
+        $ts = strtotime($fechaCita);
+        if ($ts === false) {
+            return 'Hora Programada';
+        }
+
+        $diasEn = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+        $diasEs = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
+        $idx = (int)date('w', $ts);
+
+        $diaData = $cfg[$diasEn[$idx]] ?? $cfg[$diasEs[$idx]] ?? null;
+        if (is_array($diaData)) {
+            $mod = strtolower(trim((string)($diaData['modalidad'] ?? $diaData['tipo'] ?? '')));
+            if ($mod === 'orden_llegada' || $mod === 'orden de llegada' || $mod === 'orden') {
+                return 'Orden de Llegada';
+            }
+        }
+
+        return 'Hora Programada';
+    }
+
+    /**
      * Desglosa los servicios seleccionados en una cita (desde el texto 'procedimiento'
      * o un arreglo 'servicios') y obtiene su precio real en gm_servicios.
      */
@@ -103,10 +165,6 @@ class CitaController {
         ];
     }
 
-    /**
-     * Calcula el monto total en USD cruzando la lista de servicios seleccionados
-     * contra el catálogo gm_servicios del médico.
-     */
     private static function calcularMontoServicios(PDO $pdo, int $medicoId, string $procedimiento, $serviciosInput = null): float {
         $res = self::resolverServiciosCita($pdo, $medicoId, $procedimiento, $serviciosInput);
         return (float)$res['total'];
@@ -118,6 +176,8 @@ class CitaController {
     public static function listar() {
         try {
             $pdo = Database::conectar();
+            self::asegurarEsquemaCola($pdo);
+
             $condiciones = ["c.estado_cita COLLATE utf8mb4_unicode_ci != 'cancelada' COLLATE utf8mb4_unicode_ci"];
             $params = [];
 
@@ -142,6 +202,9 @@ class CitaController {
 
             $whereSql = implode(" AND ", $condiciones);
 
+            // Ordenamiento inteligente:
+            // 1. Por fecha
+            // 2. Pacientes en_consulta primero, luego en_espera por numero_llegada ASC, luego el resto
             $sql = "SELECT 
                         c.*,
                         CONCAT(p.nombre, ' ', p.apellido) AS paciente_nombre,
@@ -156,13 +219,21 @@ class CitaController {
                     LEFT JOIN gm_usuarios_extendidos m ON c.medico_id = m.user_id
                     LEFT JOIN gm_estatus_cita ec ON c.estado_cita COLLATE utf8mb4_unicode_ci = ec.slug COLLATE utf8mb4_unicode_ci
                     WHERE $whereSql
-                    ORDER BY c.fecha_cita ASC, c.hora_cita ASC";
+                    ORDER BY 
+                        c.fecha_cita ASC,
+                        CASE 
+                            WHEN c.estado_cita COLLATE utf8mb4_unicode_ci = 'en_consulta' THEN 1
+                            WHEN c.estado_cita COLLATE utf8mb4_unicode_ci = 'en_espera' THEN 2
+                            ELSE 3
+                        END ASC,
+                        CASE WHEN c.numero_llegada > 0 THEN c.numero_llegada ELSE 999999 END ASC,
+                        c.hora_cita ASC,
+                        c.id ASC";
 
             $stmt = $pdo->prepare($sql);
             $stmt->execute($params);
             $citas = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-            // Asegurar que cada cita devuelva su desglose de servicios y monto real
             $updMonto = $pdo->prepare("UPDATE gm_citas SET total_usd = :total WHERE id = :id");
             foreach ($citas as &$cita) {
                 $resServicios = self::resolverServiciosCita(
@@ -180,11 +251,13 @@ class CitaController {
                     ]);
                 }
 
-                $montoFormateado     = number_format($montoGuardado, 2, '.', '');
-                $cita['servicios']   = $resServicios['servicios'];
-                $cita['total_usd']   = $montoFormateado;
-                $cita['monto_usd']   = $montoFormateado;
-                $cita['monto_total'] = $montoFormateado;
+                $montoFormateado        = number_format($montoGuardado, 2, '.', '');
+                $cita['servicios']      = $resServicios['servicios'];
+                $cita['total_usd']      = $montoFormateado;
+                $cita['monto_usd']      = $montoFormateado;
+                $cita['monto_total']    = $montoFormateado;
+                $cita['numero_llegada'] = (int)($cita['numero_llegada'] ?? 0);
+                $cita['tipo_cita']      = trim((string)($cita['tipo_cita'] ?? 'Hora Programada'));
             }
             unset($cita);
 
@@ -202,7 +275,7 @@ class CitaController {
 
     /**
      * POST /api/citas
-     * Agenda una nueva cita verificando cupos disponibles y guardando el monto total_usd
+     * Agenda una nueva cita detectando automáticamente si el día es por Orden de Llegada
      */
     public static function crear($input) {
         try {
@@ -216,10 +289,13 @@ class CitaController {
             }
 
             $pdo = Database::conectar();
-            $medicoId = (int)$input['medico_id'];
+            self::asegurarEsquemaCola($pdo);
 
-            // Verificar capacidad del bloque en el calendario
-            $calStmt = $pdo->prepare("SELECT cupos_por_bloque, default_status FROM gm_calendarios WHERE id = :id LIMIT 1");
+            $medicoId = (int)$input['medico_id'];
+            $fechaCita = trim((string)$input['fecha_cita']);
+
+            // Verificar capacidad y configuración del calendario
+            $calStmt = $pdo->prepare("SELECT cupos_por_bloque, default_status, dias_config FROM gm_calendarios WHERE id = :id LIMIT 1");
             $calStmt->execute([':id' => (int)$input['calendario_id']]);
             $cal = $calStmt->fetch(PDO::FETCH_ASSOC);
 
@@ -229,20 +305,59 @@ class CitaController {
                 return;
             }
 
+            // Detectar si el día trabaja por Orden de Llegada o Hora Programada
+            $tipoCitaDetectado = !empty($input['tipo_cita'])
+                ? trim((string)$input['tipo_cita'])
+                : self::detectarModalidadDia($cal['dias_config'] ?? null, $fechaCita);
+
+            $esOrdenLlegada = (stripos($tipoCitaDetectado, 'orden') !== false);
             $horaNormalizada = strlen($input['hora_cita']) === 5 ? $input['hora_cita'] . ':00' : $input['hora_cita'];
 
-            $ocupStmt = $pdo->prepare("SELECT COUNT(*) FROM gm_citas WHERE medico_id = :med AND fecha_cita = :fecha AND hora_cita = :hora AND estado_cita COLLATE utf8mb4_unicode_ci != 'cancelada' COLLATE utf8mb4_unicode_ci");
-            $ocupStmt->execute([
-                ':med'   => $medicoId,
-                ':fecha' => $input['fecha_cita'],
-                ':hora'  => $horaNormalizada
-            ]);
-            $ocupados = (int)$ocupStmt->fetchColumn();
+            if ($esOrdenLlegada) {
+                // En orden de llegada el límite de cupos aplica al día completo del calendario
+                $ocupStmt = $pdo->prepare("
+                    SELECT COUNT(*) 
+                    FROM gm_citas 
+                    WHERE medico_id = :med 
+                      AND calendario_id = :cal 
+                      AND fecha_cita = :fecha 
+                      AND estado_cita COLLATE utf8mb4_unicode_ci != 'cancelada' COLLATE utf8mb4_unicode_ci
+                ");
+                $ocupStmt->execute([
+                    ':med'   => $medicoId,
+                    ':cal'   => (int)$input['calendario_id'],
+                    ':fecha' => $fechaCita
+                ]);
+                $ocupados = (int)$ocupStmt->fetchColumn();
+                $limiteCupos = max(1, (int)$cal['cupos_por_bloque']);
 
-            if ($ocupados >= (int)$cal['cupos_por_bloque']) {
-                http_response_code(409);
-                echo json_encode(["status" => "error", "mensaje" => "Este bloque horario ya alcanzó el límite máximo de cupos disponibles."], JSON_UNESCAPED_UNICODE);
-                return;
+                if ($ocupados >= $limiteCupos) {
+                    http_response_code(409);
+                    echo json_encode(["status" => "error", "mensaje" => "Ya se alcanzó el límite máximo de cupos para este día."], JSON_UNESCAPED_UNICODE);
+                    return;
+                }
+            } else {
+                // En hora programada el límite de cupos aplica por bloque horario
+                $ocupStmt = $pdo->prepare("
+                    SELECT COUNT(*) 
+                    FROM gm_citas 
+                    WHERE medico_id = :med 
+                      AND fecha_cita = :fecha 
+                      AND hora_cita = :hora 
+                      AND estado_cita COLLATE utf8mb4_unicode_ci != 'cancelada' COLLATE utf8mb4_unicode_ci
+                ");
+                $ocupStmt->execute([
+                    ':med'   => $medicoId,
+                    ':fecha' => $fechaCita,
+                    ':hora'  => $horaNormalizada
+                ]);
+                $ocupados = (int)$ocupStmt->fetchColumn();
+
+                if ($ocupados >= (int)$cal['cupos_por_bloque']) {
+                    http_response_code(409);
+                    echo json_encode(["status" => "error", "mensaje" => "Este bloque horario ya alcanzó el límite máximo de cupos disponibles."], JSON_UNESCAPED_UNICODE);
+                    return;
+                }
             }
 
             $estadoInicial = $input['estado_cita'] ?? ($cal['default_status'] ?: 'reservada');
@@ -267,7 +382,6 @@ class CitaController {
                 $procedimiento = 'Consulta General';
             }
 
-            // Calcular monto desde gm_servicios o tomar el enviado si es mayor a 0
             $totalUsd = isset($input['total_usd'])
                 ? (float)$input['total_usd']
                 : (isset($input['monto_usd']) ? (float)$input['monto_usd'] : (isset($input['monto_total']) ? (float)$input['monto_total'] : 0.00));
@@ -276,29 +390,40 @@ class CitaController {
                 $totalUsd = self::calcularMontoServicios($pdo, $medicoId, $procedimiento, $input['servicios'] ?? null);
             }
 
+            // Si la cita nace directamente 'en_espera' (ej. recepción marca llegada al momento), asignar turno real de una vez
+            $numeroLlegada = 0;
+            if ($estadoInicial === 'en_espera') {
+                $maxStmt = $pdo->prepare("SELECT COALESCE(MAX(numero_llegada), 0) FROM gm_citas WHERE medico_id = :med AND fecha_cita = :fecha");
+                $maxStmt->execute([':med' => $medicoId, ':fecha' => $fechaCita]);
+                $numeroLlegada = (int)$maxStmt->fetchColumn() + 1;
+            }
+
             $sql = "INSERT INTO gm_citas 
-                    (calendario_id, paciente_id, medico_id, fecha_cita, hora_cita, procedimiento, total_usd, estado_cita, tipo_cita)
+                    (calendario_id, paciente_id, medico_id, fecha_cita, hora_cita, procedimiento, total_usd, estado_cita, tipo_cita, numero_llegada)
                     VALUES 
-                    (:cal, :pac, :med, :fecha, :hora, :proc, :total, :estado, :tipo)";
+                    (:cal, :pac, :med, :fecha, :hora, :proc, :total, :estado, :tipo, :turno)";
             $stmt = $pdo->prepare($sql);
             $stmt->execute([
                 ':cal'    => (int)$input['calendario_id'],
                 ':pac'    => (int)$input['paciente_id'],
                 ':med'    => $medicoId,
-                ':fecha'  => $input['fecha_cita'],
+                ':fecha'  => $fechaCita,
                 ':hora'   => $horaNormalizada,
                 ':proc'   => $procedimiento,
                 ':total'  => round($totalUsd, 2),
                 ':estado' => $estadoInicial,
-                ':tipo'   => trim($input['tipo_cita'] ?? 'Hora Programada')
+                ':tipo'   => $tipoCitaDetectado,
+                ':turno'  => $numeroLlegada
             ]);
 
             http_response_code(201);
             echo json_encode([
-                "status"    => "success",
-                "mensaje"   => "Cita médica agendada correctamente.",
-                "cita_id"   => $pdo->lastInsertId(),
-                "total_usd" => number_format($totalUsd, 2, '.', '')
+                "status"         => "success",
+                "mensaje"        => "Cita médica agendada correctamente.",
+                "cita_id"        => $pdo->lastInsertId(),
+                "tipo_cita"      => $tipoCitaDetectado,
+                "numero_llegada" => $numeroLlegada,
+                "total_usd"      => number_format($totalUsd, 2, '.', '')
             ], JSON_UNESCAPED_UNICODE);
 
         } catch (Exception $e) {
@@ -309,7 +434,7 @@ class CitaController {
 
     /**
      * PUT /api/citas
-     * Permite cambiar estado (confirmar, cancelar), reprogramar fecha/hora o actualizar procedimiento/monto
+     * Permite cambiar estado (confirmar, en_espera, cancelar), reprogramar fecha/hora o actualizar procedimiento/monto
      */
     public static function actualizar($input) {
         try {
@@ -321,13 +446,39 @@ class CitaController {
             }
 
             $pdo = Database::conectar();
+            self::asegurarEsquemaCola($pdo);
+
+            $stmtActual = $pdo->prepare("SELECT * FROM gm_citas WHERE id = :id LIMIT 1");
+            $stmtActual->execute([':id' => $citaId]);
+            $citaActual = $stmtActual->fetch(PDO::FETCH_ASSOC);
+
+            if (!$citaActual) {
+                http_response_code(404);
+                echo json_encode(["status" => "error", "mensaje" => "Cita no encontrada."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
             $campos = [];
             $params = [':id' => $citaId];
 
             if (!empty($input['estado_cita'])) {
+                $nuevoEstado = trim((string)$input['estado_cita']);
                 $campos[] = "estado_cita = :estado";
-                $params[':estado'] = trim($input['estado_cita']);
+                $params[':estado'] = $nuevoEstado;
+
+                // Si pasa a 'en_espera' y aún no tiene numero_llegada, asignarlo automáticamente
+                if ($nuevoEstado === 'en_espera' && (int)($citaActual['numero_llegada'] ?? 0) <= 0) {
+                    $maxStmt = $pdo->prepare("SELECT COALESCE(MAX(numero_llegada), 0) FROM gm_citas WHERE medico_id = :med AND fecha_cita = :fecha");
+                    $maxStmt->execute([
+                        ':med'   => (int)$citaActual['medico_id'],
+                        ':fecha' => $citaActual['fecha_cita']
+                    ]);
+                    $siguienteTurno = (int)$maxStmt->fetchColumn() + 1;
+                    $campos[] = "numero_llegada = :turno";
+                    $params[':turno'] = $siguienteTurno;
+                }
             }
+
             if (!empty($input['fecha_cita'])) {
                 $campos[] = "fecha_cita = :fecha";
                 $params[':fecha'] = trim($input['fecha_cita']);
@@ -342,10 +493,7 @@ class CitaController {
                 $campos[] = "procedimiento = :proc";
                 $params[':proc'] = $procNuevo;
 
-                // Recalcular total_usd si se actualizaron los servicios
-                $medStmt = $pdo->prepare("SELECT medico_id FROM gm_citas WHERE id = :id LIMIT 1");
-                $medStmt->execute([':id' => $citaId]);
-                $medId = (int)$medStmt->fetchColumn();
+                $medId = (int)$citaActual['medico_id'];
                 if ($medId > 0) {
                     $nuevoTotal = isset($input['total_usd'])
                         ? (float)$input['total_usd']
@@ -380,70 +528,128 @@ class CitaController {
     }
 
     /**
+     * Lógica compartida de check-in en sala de espera por paciente_id o cédula
+     */
+    private static function ejecutarCheckIn(PDO $pdo, int $medicoId, int $pacienteId = 0, string $cedula = ''): array {
+        self::asegurarEsquemaCola($pdo);
+        $hoy = date('Y-m-d');
+
+        if ($pacienteId <= 0 && trim($cedula) !== '') {
+            $cedLimpia = preg_replace('/[^0-9]/', '', $cedula);
+            $pacStmt = $pdo->prepare("
+                SELECT user_id 
+                FROM gm_usuarios_extendidos 
+                WHERE REPLACE(REPLACE(REPLACE(cedula, '.', ''), '-', ''), ' ', '') LIKE :ced 
+                LIMIT 1
+            ");
+            $pacStmt->execute([':ced' => '%' . $cedLimpia]);
+            $pacienteId = (int)$pacStmt->fetchColumn();
+        }
+
+        if ($pacienteId <= 0) {
+            return [
+                'http'    => 404,
+                'status'  => 'error',
+                'mensaje' => 'No se encontró ningún paciente registrado con esos datos.'
+            ];
+        }
+
+        // Buscar cita del paciente para HOY con ese médico
+        $stmt = $pdo->prepare("
+            SELECT c.*, CONCAT(p.nombre, ' ', p.apellido) AS paciente_nombre
+            FROM gm_citas c
+            LEFT JOIN gm_usuarios_extendidos p ON c.paciente_id = p.user_id
+            WHERE c.medico_id = :med 
+              AND c.paciente_id = :pac 
+              AND c.fecha_cita = :hoy 
+              AND c.estado_cita COLLATE utf8mb4_unicode_ci IN ('reservada', 'confirmada', 'en_espera', 'en_consulta')
+            ORDER BY c.hora_cita ASC 
+            LIMIT 1
+        ");
+        $stmt->execute([':med' => $medicoId, ':pac' => $pacienteId, ':hoy' => $hoy]);
+        $cita = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$cita) {
+            return [
+                'http'    => 404,
+                'status'  => 'error',
+                'mensaje' => 'No tiene ninguna cita programada para el día de hoy con este médico.'
+            ];
+        }
+
+        if ($cita['estado_cita'] === 'en_espera' && (int)$cita['numero_llegada'] > 0) {
+            $turnoAsignado = (int)$cita['numero_llegada'];
+        } else {
+            $maxStmt = $pdo->prepare("SELECT COALESCE(MAX(numero_llegada), 0) FROM gm_citas WHERE medico_id = :med AND fecha_cita = :hoy");
+            $maxStmt->execute([':med' => $medicoId, ':hoy' => $hoy]);
+            $turnoAsignado = (int)$maxStmt->fetchColumn() + 1;
+
+            $upd = $pdo->prepare("UPDATE gm_citas SET estado_cita = 'en_espera', numero_llegada = :turno WHERE id = :id");
+            $upd->execute([':turno' => $turnoAsignado, ':id' => $cita['id']]);
+        }
+
+        // Calcular pacientes por delante en sala de espera
+        $delanteStmt = $pdo->prepare("
+            SELECT COUNT(*) 
+            FROM gm_citas 
+            WHERE medico_id = :med 
+              AND fecha_cita = :hoy 
+              AND estado_cita COLLATE utf8mb4_unicode_ci = 'en_espera' 
+              AND numero_llegada > 0
+              AND numero_llegada < :turno
+        ");
+        $delanteStmt->execute([':med' => $medicoId, ':hoy' => $hoy, ':turno' => $turnoAsignado]);
+        $pacientesDelante = (int)$delanteStmt->fetchColumn();
+
+        $promedioMin = 20;
+        try {
+            $promStmt = $pdo->prepare("SELECT AVG(duracion_minutos) FROM gm_tiempo_atencion WHERE medico_id = :med AND duracion_minutos > 0");
+            $promStmt->execute([':med' => $medicoId]);
+            $valProm = (float)$promStmt->fetchColumn();
+            if ($valProm > 0) {
+                $promedioMin = $valProm;
+            }
+        } catch (Exception $e) {}
+
+        $tiempoEstimadoMin = (int)round($pacientesDelante * $promedioMin);
+
+        return [
+            'http'                => 200,
+            'status'              => 'success',
+            'mensaje'             => '¡Llegada registrada! Ha ingresado a la sala de espera.',
+            'cita_id'             => (int)$cita['id'],
+            'paciente_nombre'     => trim((string)($cita['paciente_nombre'] ?? 'Paciente')),
+            'tipo_cita'           => trim((string)($cita['tipo_cita'] ?? 'Orden de Llegada')),
+            'numero_turno'        => $turnoAsignado,
+            'pacientes_delante'   => $pacientesDelante,
+            'tiempo_estimado_min' => $tiempoEstimadoMin,
+        ];
+    }
+
+    /**
      * POST /api/citas/check-in-qr
-     * Se ejecuta cuando el paciente escanea el QR del médico en la clínica
-     * Recibe: { "medico_id": 1, "paciente_id": 5 }
+     * Recibe: { "medico_id": 1, "paciente_id": 5 } o { "medico_id": 1, "cedula": "12345678" }
      */
     public static function checkInQr($input) {
         try {
             $medicoId   = (int)($input['medico_id'] ?? 0);
             $pacienteId = (int)($input['paciente_id'] ?? 0);
+            $cedula     = trim((string)($input['cedula'] ?? ''));
 
-            if ($medicoId <= 0 || $pacienteId <= 0) {
+            if ($medicoId <= 0 || ($pacienteId <= 0 && $cedula === '')) {
                 http_response_code(400);
-                echo json_encode(["status" => "error", "mensaje" => "Los campos medico_id y paciente_id son obligatorios."], JSON_UNESCAPED_UNICODE);
+                echo json_encode([
+                    "status"  => "error",
+                    "mensaje" => "Debe indicar medico_id y el paciente_id o cédula."
+                ], JSON_UNESCAPED_UNICODE);
                 return;
             }
 
             $pdo = Database::conectar();
-            $hoy = date('Y-m-d');
-
-            // Buscar cita del paciente para HOY con ese médico
-            $stmt = $pdo->prepare("SELECT * FROM gm_citas WHERE medico_id = :med AND paciente_id = :pac AND fecha_cita = :hoy AND estado_cita COLLATE utf8mb4_unicode_ci IN ('reservada', 'confirmada', 'en_espera') ORDER BY hora_cita ASC LIMIT 1");
-            $stmt->execute([':med' => $medicoId, ':pac' => $pacienteId, ':hoy' => $hoy]);
-            $cita = $stmt->fetch(PDO::FETCH_ASSOC);
-
-            if (!$cita) {
-                http_response_code(404);
-                echo json_encode(["status" => "error", "mensaje" => "No tiene ninguna cita programada para el día de hoy con este médico."], JSON_UNESCAPED_UNICODE);
-                return;
-            }
-
-            // Si ya estaba en espera, devolver su turno actual
-            if ($cita['estado_cita'] === 'en_espera' && (int)$cita['numero_llegada'] > 0) {
-                $turnoAsignado = (int)$cita['numero_llegada'];
-            } else {
-                // Calcular siguiente número correlativo de llegada para ese médico hoy
-                $maxStmt = $pdo->prepare("SELECT COALESCE(MAX(numero_llegada), 0) FROM gm_citas WHERE medico_id = :med AND fecha_cita = :hoy");
-                $maxStmt->execute([':med' => $medicoId, ':hoy' => $hoy]);
-                $turnoAsignado = (int)$maxStmt->fetchColumn() + 1;
-
-                $upd = $pdo->prepare("UPDATE gm_citas SET estado_cita = 'en_espera', numero_llegada = :turno WHERE id = :id");
-                $upd->execute([':turno' => $turnoAsignado, ':id' => $cita['id']]);
-            }
-
-            // Calcular pacientes por delante y tiempo estimado de espera
-            $delanteStmt = $pdo->prepare("SELECT COUNT(*) FROM gm_citas WHERE medico_id = :med AND fecha_cita = :hoy AND estado_cita COLLATE utf8mb4_unicode_ci = 'en_espera' AND numero_llegada < :turno");
-            $delanteStmt->execute([':med' => $medicoId, ':hoy' => $hoy, ':turno' => $turnoAsignado]);
-            $pacientesDelante = (int)$delanteStmt->fetchColumn();
-
-            $promStmt = $pdo->prepare("SELECT AVG(duracion_minutos) FROM gm_tiempo_atencion WHERE medico_id = :med AND duracion_minutos > 0");
-            $promStmt->execute([':med' => $medicoId]);
-            $promedioMin = (float)$promStmt->fetchColumn();
-            if ($promedioMin <= 0) {
-                $promedioMin = 20; // Promedio base si aún no hay histórico
-            }
-
-            $tiempoEstimadoMin = round($pacientesDelante * $promedioMin);
-
-            echo json_encode([
-                "status"               => "success",
-                "mensaje"              => "¡Llegada registrada! Ha ingresado a la sala de espera.",
-                "cita_id"              => (int)$cita['id'],
-                "numero_turno"         => $turnoAsignado,
-                "pacientes_delante"    => $pacientesDelante,
-                "tiempo_estimado_min"  => $tiempoEstimadoMin
-            ], JSON_UNESCAPED_UNICODE);
+            $res = self::ejecutarCheckIn($pdo, $medicoId, $pacienteId, $cedula);
+            http_response_code($res['http']);
+            unset($res['http']);
+            echo json_encode($res, JSON_UNESCAPED_UNICODE);
 
         } catch (Exception $e) {
             http_response_code(500);
@@ -452,8 +658,85 @@ class CitaController {
     }
 
     /**
+     * GET /marcar-llegada?medico_id=X (y opcional &paciente_id=Y)
+     * Página web móvil responsiva para cuando el paciente escanea el QR con la cámara nativa de su teléfono.
+     */
+    public static function renderizarCheckInWeb() {
+        header("Content-Type: text/html; charset=utf-8");
+        $medicoId   = (int)($_GET['medico_id'] ?? $_GET['med'] ?? 0);
+        $pacienteId = (int)($_GET['paciente_id'] ?? $_GET['pac'] ?? 0);
+        $cedulaPost = trim((string)($_POST['cedula'] ?? ''));
+
+        $pdo = Database::conectar();
+        $nombreMedico = 'Consultorio Médico';
+        $especialidad = '';
+
+        if ($medicoId > 0) {
+            $stmtMed = $pdo->prepare("SELECT nombre, apellido, especialidad FROM gm_usuarios_extendidos WHERE user_id = :id LIMIT 1");
+            $stmtMed->execute([':id' => $medicoId]);
+            $med = $stmtMed->fetch(PDO::FETCH_ASSOC);
+            if ($med) {
+                $nombreMedico = 'Dr(a). ' . trim(($med['nombre'] ?? '') . ' ' . ($med['apellido'] ?? ''));
+                $especialidad = trim((string)($med['especialidad'] ?? ''));
+            }
+        }
+
+        $resultado = null;
+        if ($medicoId > 0 && ($pacienteId > 0 || ($_SERVER['REQUEST_METHOD'] === 'POST' && $cedulaPost !== ''))) {
+            $resultado = self::ejecutarCheckIn($pdo, $medicoId, $pacienteId, $cedulaPost);
+        }
+
+        echo '<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sala de Espera - Check-in QR</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f3f6fa; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+  .card { background: #fff; border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); max-width: 420px; width: 100%; padding: 28px; text-align: center; }
+  h1 { font-size: 21px; color: #1a2b49; margin: 0 0 6px; }
+  .sub { font-size: 14px; color: #5c6f8c; margin-bottom: 22px; }
+  input { width: 100%; box-sizing: border-box; padding: 14px; font-size: 16px; border: 1.5px solid #cbd5e1; border-radius: 10px; margin-bottom: 14px; text-align: center; }
+  button { width: 100%; padding: 14px; font-size: 16px; font-weight: bold; background: #0d6efd; color: #fff; border: none; border-radius: 10px; cursor: pointer; }
+  .turno-box { background: #ecfdf5; border: 2px solid #10b981; border-radius: 14px; padding: 20px; margin-top: 10px; }
+  .turno-num { font-size: 48px; font-weight: 800; color: #047857; line-height: 1.1; margin: 8px 0; }
+  .err { background: #fef2f2; border: 1px solid #ef4444; color: #b91c1c; padding: 14px; border-radius: 10px; margin-bottom: 14px; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>' . htmlspecialchars($nombreMedico) . '</h1>
+  <div class="sub">' . htmlspecialchars($especialidad ?: 'Registro de Llegada a Consulta') . '</div>';
+
+        if ($medicoId <= 0) {
+            echo '<div class="err">Código QR inválido: falta el identificador del médico.</div>';
+        } elseif ($resultado !== null && $resultado['status'] === 'success') {
+            echo '<div class="turno-box">
+                    <div style="font-size:14px;color:#065f46;font-weight:600;">¡LLEGADA CONFIRMADA!</div>
+                    <div style="font-size:16px;color:#1f2937;margin-top:4px;">' . htmlspecialchars($resultado['paciente_nombre']) . '</div>
+                    <div style="font-size:12px;color:#4b5563;margin-top:12px;">SU TURNO EN SALA DE ESPERA ES</div>
+                    <div class="turno-num">#' . (int)$resultado['numero_turno'] . '</div>
+                    <div style="font-size:14px;color:#374151;">Pacientes delante: <strong>' . (int)$resultado['pacientes_delante'] . '</strong></div>
+                    <div style="font-size:14px;color:#374151;margin-top:4px;">Tiempo estimado: <strong>' . (int)$resultado['tiempo_estimado_min'] . ' min</strong></div>
+                  </div>';
+        } else {
+            if ($resultado !== null && $resultado['status'] === 'error') {
+                echo '<div class="err">' . htmlspecialchars($resultado['mensaje']) . '</div>';
+            }
+            echo '<form method="POST">
+                    <p style="font-size:14px;color:#334155;margin-bottom:14px;">Ingresa tu número de cédula para anunciar tu llegada y asignar tu turno:</p>
+                    <input type="text" name="cedula" placeholder="Ej. 18456789" required autofocus>
+                    <button type="submit">Anunciar mi Llegada</button>
+                  </form>';
+        }
+
+        echo '</div></body></html>';
+        exit;
+    }
+
+    /**
      * POST /api/citas/iniciar-atencion
-     * El médico pasa al paciente a consulta y registra la hora de inicio
      */
     public static function iniciarAtencion($input) {
         try {
@@ -467,8 +750,9 @@ class CitaController {
             }
 
             $pdo = Database::conectar();
-            $pdo->prepare("UPDATE gm_citas SET estado_cita = 'en_consulta' WHERE id = :cid")->execute([':cid' => $citaId]);
+            self::asegurarEsquemaCola($pdo);
 
+            $pdo->prepare("UPDATE gm_citas SET estado_cita = 'en_consulta' WHERE id = :cid")->execute([':cid' => $citaId]);
             $pdo->prepare("INSERT INTO gm_tiempo_atencion (medico_id, cita_id, hora_inicio) VALUES (:med, :cid, NOW())")
                 ->execute([':med' => $medicoId, ':cid' => $citaId]);
 
@@ -485,8 +769,6 @@ class CitaController {
 
     /**
      * GET /api/marketplace/medicos
-     * Devuelve el directorio completo de médicos para el Marketplace de Servicios:
-     * perfil, bio, foto, credenciales, sedes (país/estado) y servicios/combos activos.
      */
     public static function listarMarketplace() {
         try {
@@ -508,7 +790,6 @@ class CitaController {
                     continue;
                 }
 
-                // 1. Resolver sedes registradas (tabla gm_sedes, configuración del médico y/o calendarios)
                 $sedes = [];
                 $paisBase   = trim((string)($med['pais'] ?? ''));
                 $estadoBase = trim((string)($med['estado'] ?? ''));
@@ -527,11 +808,8 @@ class CitaController {
                             'direccion' => trim((string)($rs['direccion'] ?? $rs['direccion_detalle'] ?? $dirBase)),
                         ];
                     }
-                } catch (Exception $e) {
-                    // La tabla gm_sedes puede no existir en algunas instalaciones
-                }
+                } catch (Exception $e) {}
 
-                // Revisar si tiene sedes guardadas en gm_configuracion (JSON sedes_medico_X)
                 if (empty($sedes)) {
                     try {
                         $stmtCfg = $pdo->prepare("SELECT valor FROM gm_configuracion WHERE clave = :k LIMIT 1");
@@ -564,7 +842,6 @@ class CitaController {
                     } catch (Exception $e) {}
                 }
 
-                // Consultar calendario principal y sedes configuradas en dias_config
                 $calendarioId = 0;
                 try {
                     $stmtCal = $pdo->prepare("SELECT id, nombre_calendario, dias_config FROM gm_calendarios WHERE medico_id = :mid ORDER BY id ASC");
@@ -598,7 +875,6 @@ class CitaController {
                     }
                 } catch (Exception $e) {}
 
-                // Respaldo con país/estado del perfil si aún no hay sedes detalladas
                 if (empty($sedes) && ($paisBase !== '' || $estadoBase !== '' || $dirBase !== '')) {
                     $sedes[] = [
                         'id'        => 0,
@@ -609,7 +885,6 @@ class CitaController {
                     ];
                 }
 
-                // 2. Resolver servicios y combos activos del médico
                 $stmtServ = $pdo->prepare("
                     SELECT id, tipo, nombre_servicio, descripcion, precio, items_combo, estado
                     FROM gm_servicios
@@ -620,7 +895,6 @@ class CitaController {
                 $stmtServ->execute([':mid' => $uid]);
                 $servicios = $stmtServ->fetchAll(PDO::FETCH_ASSOC);
 
-                // 3. Resolver avatar_url
                 $avatar = trim((string)($med['avatar_url'] ?? $med['avatar'] ?? ''));
                 if ($avatar === '') {
                     try {
@@ -630,7 +904,6 @@ class CitaController {
                     } catch (Exception $e) {}
                 }
 
-                // Decodificar redes sociales si vienen en JSON
                 $redesRaw = $med['redes_sociales'] ?? '';
                 $redesDecoded = is_string($redesRaw) ? json_decode($redesRaw, true) : $redesRaw;
 
@@ -671,5 +944,4 @@ class CitaController {
             echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
         }
     }
-
 }

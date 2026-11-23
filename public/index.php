@@ -211,6 +211,12 @@ if ($uri === '/' || $uri === '/api') {
 } elseif ($uri === '/api/citas/check-in-qr' && $method === 'POST') {
     CitaController::checkInQr($input);
 
+} elseif (($uri === '/marcar-llegada' || $uri === '/sala-espera' || $uri === '/api/citas/check-in-qr') && in_array($method, ['GET', 'POST'], true)) {
+    if (ob_get_length()) {
+        ob_clean();
+    }
+    CitaController::renderizarCheckInWeb();
+
 } elseif ($uri === '/api/citas/iniciar-atencion' && $method === 'POST') {
     CitaController::iniciarAtencion($input);
 
