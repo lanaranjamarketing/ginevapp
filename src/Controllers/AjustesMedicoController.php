@@ -46,6 +46,18 @@ class AjustesMedicoController {
         $stmt->execute([$medicoId, $key, $value]);
     }
 
+    private static function primerEnteroPositivo(array $fuente, array $claves, int $default = 1): int {
+        foreach ($claves as $k) {
+            if (isset($fuente[$k]) && $fuente[$k] !== '' && $fuente[$k] !== null) {
+                $val = intval($fuente[$k]);
+                if ($val >= 1) {
+                    return $val;
+                }
+            }
+        }
+        return $default;
+    }
+
     /**
      * GET /api/medico/ajustes?medico_id=X
      */
@@ -113,31 +125,33 @@ class AjustesMedicoController {
                 }
             }
 
-            $inicioFactura = max(1, intval($metas['inicio_factura'] ?? ($metas['numero_control'] ?? 1)));
-            $inicioPresupuesto = max(1, intval($metas['inicio_presupuesto'] ?? 1));
+            $inicioFactura = self::primerEnteroPositivo($metas, ['inicio_factura', 'numero_control', 'numero_inicio_factura'], 1);
+            $inicioPresupuesto = self::primerEnteroPositivo($metas, ['inicio_presupuesto', 'numero_inicio_presupuesto'], 1);
 
             $perfilCompleto = array_merge($perfilBase, [
-                'user_id'            => $realMedicoId,
-                'avatar_url'         => $avatarUrl,
-                'tagline'            => !empty($perfilBase['tagline']) ? $perfilBase['tagline'] : ($metas['tagline'] ?? ''),
-                'bio'                => $metas['bio'] ?? '',
-                'redes_sociales'     => $redesLista,
-                'segundo_nombre'     => !empty($perfilBase['segundo_nombre']) ? $perfilBase['segundo_nombre'] : ($metas['segundo_nombre'] ?? ''),
-                'segundo_apellido'   => !empty($perfilBase['segundo_apellido']) ? $perfilBase['segundo_apellido'] : ($metas['segundo_apellido'] ?? ''),
-                'ocupacion'          => !empty($perfilBase['ocupacion']) ? $perfilBase['ocupacion'] : ($metas['ocupacion'] ?? 'Médico Cirujano'),
-                'universidad'        => !empty($perfilBase['universidad']) ? $perfilBase['universidad'] : ($metas['universidad'] ?? ''),
-                'especialidad'       => !empty($perfilBase['especialidad']) ? $perfilBase['especialidad'] : ($metas['especialidad'] ?? ''),
-                'mpps'               => !empty($perfilBase['mpps']) ? $perfilBase['mpps'] : ($metas['mpps'] ?? ''),
-                'cmm'                => !empty($perfilBase['cmm']) ? $perfilBase['cmm'] : ($metas['cmm'] ?? ''),
-                'rif_tipo'           => $metas['rif_tipo'] ?? 'V',
-                'rif_num'            => $metas['rif_num'] ?? '',
-                'pais_fiscal'        => !empty($perfilBase['pais']) ? $perfilBase['pais'] : ($metas['pais_fiscal'] ?? 'Venezuela'),
-                'estado_fiscal'      => !empty($perfilBase['estado']) ? $perfilBase['estado'] : ($metas['estado_fiscal'] ?? ''),
-                'direccion_fiscal'   => !empty($perfilBase['direccion_detalle']) ? $perfilBase['direccion_detalle'] : ($metas['direccion_fiscal'] ?? ''),
-                'inicio_factura'     => $inicioFactura,
-                'numero_control'     => $inicioFactura,
-                'inicio_presupuesto' => $inicioPresupuesto,
-                'sedes'              => $sedes
+                'user_id'                   => $realMedicoId,
+                'avatar_url'                => $avatarUrl,
+                'tagline'                   => !empty($perfilBase['tagline']) ? $perfilBase['tagline'] : ($metas['tagline'] ?? ''),
+                'bio'                       => $metas['bio'] ?? '',
+                'redes_sociales'            => $redesLista,
+                'segundo_nombre'            => !empty($perfilBase['segundo_nombre']) ? $perfilBase['segundo_nombre'] : ($metas['segundo_nombre'] ?? ''),
+                'segundo_apellido'          => !empty($perfilBase['segundo_apellido']) ? $perfilBase['segundo_apellido'] : ($metas['segundo_apellido'] ?? ''),
+                'ocupacion'                 => !empty($perfilBase['ocupacion']) ? $perfilBase['ocupacion'] : ($metas['ocupacion'] ?? 'Médico Cirujano'),
+                'universidad'               => !empty($perfilBase['universidad']) ? $perfilBase['universidad'] : ($metas['universidad'] ?? ''),
+                'especialidad'              => !empty($perfilBase['especialidad']) ? $perfilBase['especialidad'] : ($metas['especialidad'] ?? ''),
+                'mpps'                      => !empty($perfilBase['mpps']) ? $perfilBase['mpps'] : ($metas['mpps'] ?? ''),
+                'cmm'                       => !empty($perfilBase['cmm']) ? $perfilBase['cmm'] : ($metas['cmm'] ?? ''),
+                'rif_tipo'                  => $metas['rif_tipo'] ?? 'V',
+                'rif_num'                   => $metas['rif_num'] ?? '',
+                'pais_fiscal'               => !empty($perfilBase['pais']) ? $perfilBase['pais'] : ($metas['pais_fiscal'] ?? 'Venezuela'),
+                'estado_fiscal'             => !empty($perfilBase['estado']) ? $perfilBase['estado'] : ($metas['estado_fiscal'] ?? ''),
+                'direccion_fiscal'          => !empty($perfilBase['direccion_detalle']) ? $perfilBase['direccion_detalle'] : ($metas['direccion_fiscal'] ?? ''),
+                'inicio_factura'            => $inicioFactura,
+                'numero_control'            => $inicioFactura,
+                'numero_inicio_factura'     => $inicioFactura,
+                'inicio_presupuesto'        => $inicioPresupuesto,
+                'numero_inicio_presupuesto' => $inicioPresupuesto,
+                'sedes'                     => $sedes
             ]);
 
             $stmtCal = $pdo->prepare("SELECT * FROM gm_calendarios WHERE medico_id = ? ORDER BY id DESC");
@@ -322,8 +336,13 @@ class AjustesMedicoController {
      */
     public static function guardarPerfil() {
         try {
-            $input = json_decode(file_get_contents('php://input'), true) ?: [];
-            $idParam = intval($input['medico_id'] ?? 0);
+            $rawBody = file_get_contents('php://input');
+            $input = json_decode($rawBody, true);
+            if (!is_array($input) || empty($input)) {
+                $input = $_POST;
+            }
+
+            $idParam = intval($input['medico_id'] ?? $input['user_id'] ?? 0);
             $seccion = trim($input['seccion'] ?? 'todo');
 
             if ($idParam <= 0) {
@@ -418,9 +437,22 @@ class AjustesMedicoController {
                     $estado  = trim($input['estado_fiscal'] ?? '');
                     $dir     = trim($input['direccion_fiscal'] ?? '');
 
-                    // Correlativos independientes por médico (inicio_factura == numero_control)
-                    $inicioFactura     = max(1, intval($input['inicio_factura'] ?? ($input['numero_control'] ?? 1)));
-                    $inicioPresupuesto = max(1, intval($input['inicio_presupuesto'] ?? 1));
+                    // Soporta cualquier variante de nombre enviada desde el formulario Flutter/Web
+                    $inicioFactura = self::primerEnteroPositivo($input, [
+                        'inicio_factura',
+                        'numero_control',
+                        'numero_inicio_factura',
+                        'inicioFactura',
+                        'numeroControl',
+                        'correlativo_factura'
+                    ], 1);
+
+                    $inicioPresupuesto = self::primerEnteroPositivo($input, [
+                        'inicio_presupuesto',
+                        'numero_inicio_presupuesto',
+                        'inicioPresupuesto',
+                        'correlativo_presupuesto'
+                    ], 1);
 
                     $stmt = $pdo->prepare("
                         UPDATE gm_usuarios_extendidos
@@ -464,7 +496,16 @@ class AjustesMedicoController {
                     break;
             }
 
-            echo json_encode(["status" => "success", "mensaje" => $msg], JSON_UNESCAPED_UNICODE);
+            echo json_encode([
+                "status"  => "success",
+                "mensaje" => $msg,
+                "data"    => [
+                    "medico_id"          => $medicoId,
+                    "inicio_factura"     => $inicioFactura ?? null,
+                    "numero_control"     => $inicioFactura ?? null,
+                    "inicio_presupuesto" => $inicioPresupuesto ?? null,
+                ]
+            ], JSON_UNESCAPED_UNICODE);
 
         } catch (Exception $e) {
             http_response_code(500);

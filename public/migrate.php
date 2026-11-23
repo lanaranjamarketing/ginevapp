@@ -141,6 +141,16 @@ try {
             PRIMARY KEY (`id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;",
 
+        "CREATE TABLE IF NOT EXISTS `gm_medico_meta` (
+            `id` int(11) NOT NULL AUTO_INCREMENT,
+            `medico_id` int(11) NOT NULL,
+            `meta_key` varchar(100) NOT NULL,
+            `meta_value` longtext DEFAULT NULL,
+            `updated_at` timestamp DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `idx_medico_key` (`medico_id`, `meta_key`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;",
+
         "CREATE TABLE IF NOT EXISTS `gm_calendarios` (
             `id` mediumint(9) NOT NULL AUTO_INCREMENT,
             `medico_id` bigint(20) NOT NULL,
@@ -255,8 +265,35 @@ try {
             `tasa_bcv` decimal(10,4) NOT NULL DEFAULT 1.0000,
             `facturado` tinyint(1) NOT NULL DEFAULT 0,
             `numero_factura` varchar(50) DEFAULT NULL,
-            `url_factura_pdf` varchar(255) DEFAULT NULL,
-            PRIMARY KEY (`id`)
+            `url_factura_pdf` varchar(500) DEFAULT NULL,
+            PRIMARY KEY (`id`),
+            INDEX `idx_finanzas_medico_factura` (`medico_id`, `numero_factura`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;",
+
+        "CREATE TABLE IF NOT EXISTS `gm_presupuestos` (
+            `id` int(11) NOT NULL AUTO_INCREMENT,
+            `numero_presupuesto` varchar(32) DEFAULT NULL,
+            `medico_id` int(11) NOT NULL,
+            `paciente_id` int(11) NOT NULL DEFAULT 0,
+            `paciente_nombre` varchar(200) NOT NULL DEFAULT '',
+            `paciente_cedula` varchar(50) NOT NULL DEFAULT '',
+            `paciente_telefono` varchar(50) DEFAULT NULL,
+            `paciente_direccion` varchar(300) DEFAULT NULL,
+            `fecha_emision` date NOT NULL,
+            `fecha_vencimiento` date NOT NULL,
+            `items_json` longtext NOT NULL,
+            `total_usd` decimal(12,2) NOT NULL DEFAULT 0.00,
+            `total_bs` decimal(14,2) NOT NULL DEFAULT 0.00,
+            `tasa_bcv` decimal(12,4) NOT NULL DEFAULT 1.0000,
+            `observaciones` text DEFAULT NULL,
+            `estatus` varchar(20) NOT NULL DEFAULT 'pendiente',
+            `finanza_id` int(11) DEFAULT NULL,
+            `url_pdf` varchar(500) DEFAULT NULL,
+            `created_at` timestamp DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`),
+            INDEX `idx_medico_fecha` (`medico_id`, `fecha_emision`),
+            INDEX `idx_medico_presupuesto` (`medico_id`, `numero_presupuesto`),
+            INDEX `idx_vencimiento` (`fecha_vencimiento`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;",
 
         "CREATE TABLE IF NOT EXISTS `gm_tasa_bcv` (
@@ -299,6 +336,31 @@ try {
     $stmtCol = $pdo->query("SHOW COLUMNS FROM `gm_citas` LIKE 'total_usd'");
     if ($stmtCol && !$stmtCol->fetch()) {
         $pdo->exec("ALTER TABLE `gm_citas` ADD COLUMN `total_usd` decimal(10,2) NOT NULL DEFAULT 0.00 AFTER `procedimiento`");
+    }
+
+    // Asegurar columnas de facturación en gm_finanzas si la tabla ya existía previamente
+    $colsFinanzas = [
+        'facturado'       => "ALTER TABLE `gm_finanzas` ADD COLUMN `facturado` tinyint(1) NOT NULL DEFAULT 0",
+        'numero_factura'  => "ALTER TABLE `gm_finanzas` ADD COLUMN `numero_factura` varchar(50) DEFAULT NULL",
+        'url_factura_pdf' => "ALTER TABLE `gm_finanzas` ADD COLUMN `url_factura_pdf` varchar(500) DEFAULT NULL",
+    ];
+    foreach ($colsFinanzas as $col => $alterSql) {
+        $chk = $pdo->query("SHOW COLUMNS FROM `gm_finanzas` LIKE '$col'");
+        if ($chk && !$chk->fetch()) {
+            $pdo->exec($alterSql);
+        }
+    }
+
+    // Asegurar columnas de control de conversión en gm_presupuestos
+    $colsPresupuestos = [
+        'estatus'    => "ALTER TABLE `gm_presupuestos` ADD COLUMN `estatus` varchar(20) NOT NULL DEFAULT 'pendiente'",
+        'finanza_id' => "ALTER TABLE `gm_presupuestos` ADD COLUMN `finanza_id` int(11) DEFAULT NULL",
+    ];
+    foreach ($colsPresupuestos as $col => $alterSql) {
+        $chk = $pdo->query("SHOW COLUMNS FROM `gm_presupuestos` LIKE '$col'");
+        if ($chk && !$chk->fetch()) {
+            $pdo->exec($alterSql);
+        }
     }
 
     // Asegurar soporte de exámenes independientes en gm_historias_examenes
@@ -355,7 +417,7 @@ try {
 
     echo json_encode([
         "status" => "success",
-        "mensaje" => "¡Todas las tablas del sistema médico, catálogos, soporte de exámenes independientes y configuración dinámica fueron creados y actualizados exitosamente!"
+        "mensaje" => "¡Todas las tablas del sistema médico, metadatos por médico, presupuestos, facturación y configuración dinámica fueron creados y actualizados exitosamente!"
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
 
 } catch (PDOException $e) {

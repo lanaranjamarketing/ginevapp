@@ -36,16 +36,26 @@ class FacturaPdfGenerator {
         return sprintf('#%02x%02x%02x', $r, $g, $b);
     }
 
-    private static function extraerLugarEmision(array $medico): string {
-        $ciudad = trim((string)($medico['ciudad'] ?? $medico['municipio'] ?? ''));
+    private static function primerTextoNoVacio(array $candidatos, string $fallback = ''): string {
+        foreach ($candidatos as $val) {
+            $limpio = trim((string)($val ?? ''));
+            if ($limpio !== '') {
+                return $limpio;
+            }
+        }
+        return $fallback;
+    }
+
+    private static function extraerLugarEmision(array $medico, array $metas = []): string {
+        $ciudad = self::primerTextoNoVacio([$medico['ciudad'] ?? '', $medico['municipio'] ?? '']);
         if ($ciudad !== '') {
             return mb_strtoupper($ciudad, 'UTF-8');
         }
-        $estado = trim((string)($medico['estado'] ?? ''));
+        $estado = self::primerTextoNoVacio([$medico['estado'] ?? '', $metas['estado_fiscal'] ?? '']);
         if ($estado !== '') {
             return mb_strtoupper($estado, 'UTF-8');
         }
-        $dir = trim((string)($medico['direccion_detalle'] ?? ''));
+        $dir = self::primerTextoNoVacio([$medico['direccion_detalle'] ?? '', $metas['direccion_fiscal'] ?? '']);
         if ($dir !== '') {
             $partes = array_filter(array_map('trim', explode(',', $dir)));
             if (!empty($partes)) {
@@ -69,8 +79,7 @@ class FacturaPdfGenerator {
 
     /**
      * Calcula el correlativo independiente de factura del médico:
-     * Si la transacción ya tenía numero_factura asignado, lo conserva; de lo contrario,
-     * toma MAX(numero_factura) de ese mismo médico + 1 (nunca menor al inicio_factura configurado).
+     * Toma MAX(numero_factura) de ese mismo médico + 1 (nunca menor al inicio_factura configurado).
      */
     private static function obtenerSiguienteNumeroFacturaMedico(PDO $pdo, int $medicoId, array $metas): string {
         $inicioConfigurado = max(1, intval($metas['inicio_factura'] ?? ($metas['numero_control'] ?? 1)));
@@ -91,7 +100,7 @@ class FacturaPdfGenerator {
 
     /**
      * Genera la Factura digital replicando la estructura oficial con datos dinámicos del médico,
-     * colores del tema activo, QR en lugar de logo y números de Factura y Control iguales en rojo.
+     * especialidad real desde BD, colores del tema activo y números de Factura y Control iguales en rojo.
      */
     public static function generarFacturaPdf(int $finanzaId, ?PDO $pdoExterno = null, array $temaOverride = []): array {
         $pdo = $pdoExterno ?? Database::conectar();
@@ -131,35 +140,44 @@ class FacturaPdfGenerator {
 
         $nombreMedCompleto = trim(
             ($medico['nombre'] ?? '') . ' ' .
-            ($medico['segundo_nombre'] ?? '') . ' ' .
+            ($medico['segundo_nombre'] ?? ($metas['segundo_nombre'] ?? '')) . ' ' .
             ($medico['apellido'] ?? '') . ' ' .
-            ($medico['segundo_apellido'] ?? '')
+            ($medico['segundo_apellido'] ?? ($metas['segundo_apellido'] ?? ''))
         );
         $nombreMedCompleto = preg_replace('/\s+/', ' ', $nombreMedCompleto) ?: 'Médico Especialista';
         $tituloMedicoMayus = mb_strtoupper($prefijoDr . ' ' . $nombreMedCompleto, 'UTF-8');
         $tituloMedicoFirma = $prefijoDrFirma . ' ' . $nombreMedCompleto;
 
-        // Especialidad
-        $especialidad = trim((string)($medico['especialidad'] ?? $medico['especialidad_medica'] ?? ($metas['especialidad'] ?? 'MEDICINA ESPECIALIZADA')));
+        // Especialidad real almacenada en BD (gm_usuarios_extendidos o gm_medico_meta)
+        $especialidad = self::primerTextoNoVacio([
+            $medico['especialidad'] ?? '',
+            $medico['especialidad_medica'] ?? '',
+            $metas['especialidad'] ?? '',
+            $medico['ocupacion'] ?? '',
+            $metas['ocupacion'] ?? '',
+        ], 'MEDICINA ESPECIALIZADA');
         $especialidadMayus = mb_strtoupper($especialidad, 'UTF-8');
 
         // Dirección fiscal y teléfono WhatsApp del médico
-        $domicilioMedico = trim((string)($medico['direccion_detalle'] ?? ($metas['direccion_fiscal'] ?? '')));
+        $domicilioMedico = self::primerTextoNoVacio([
+            $medico['direccion_detalle'] ?? '',
+            $metas['direccion_fiscal'] ?? '',
+        ]);
         if ($domicilioMedico === '') {
-            $domicilioMedico = trim(($medico['estado'] ?? '') . ', ' . ($medico['pais'] ?? ''), ', ');
+            $domicilioMedico = trim(($medico['estado'] ?? ($metas['estado_fiscal'] ?? '')) . ', ' . ($medico['pais'] ?? ($metas['pais_fiscal'] ?? '')), ', ');
         }
         if ($domicilioMedico === '') {
             $domicilioMedico = 'Domicilio Fiscal No Registrado';
         }
-        $telefonoMedico = trim((string)($medico['whatsapp'] ?? $medico['telefono'] ?? 'No especificado'));
-        $lugarEmision   = self::extraerLugarEmision($medico);
+        $telefonoMedico = self::primerTextoNoVacio([$medico['whatsapp'] ?? '', $medico['telefono'] ?? ''], 'No especificado');
+        $lugarEmision   = self::extraerLugarEmision($medico, $metas);
 
         // MPPS, CMM y RIF del médico
-        $mpps = trim((string)($medico['mpps'] ?? ($metas['mpps'] ?? '—')));
-        $cmm  = trim((string)($medico['cmg'] ?? $medico['cmm'] ?? ($metas['cmm'] ?? '—')));
+        $mpps = self::primerTextoNoVacio([$medico['mpps'] ?? '', $metas['mpps'] ?? ''], '—');
+        $cmm  = self::primerTextoNoVacio([$medico['cmg'] ?? '', $medico['cmm'] ?? '', $metas['cmm'] ?? ''], '—');
 
-        $rifTipo = trim((string)($medico['rif_tipo'] ?? ($metas['rif_tipo'] ?? '')));
-        $rifNum  = trim((string)($medico['rif_num'] ?? $medico['rif'] ?? ($metas['rif_num'] ?? '')));
+        $rifTipo = self::primerTextoNoVacio([$medico['rif_tipo'] ?? '', $metas['rif_tipo'] ?? '']);
+        $rifNum  = self::primerTextoNoVacio([$medico['rif_num'] ?? '', $medico['rif'] ?? '', $metas['rif_num'] ?? '']);
         if ($rifNum !== '') {
             $rifMedico = (strpos($rifNum, '-') !== false || $rifTipo === '') ? $rifNum : ($rifTipo . '-' . $rifNum);
         } elseif (!empty($medico['cedula'])) {
