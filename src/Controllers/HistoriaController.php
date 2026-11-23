@@ -9,6 +9,53 @@ use Exception;
 class HistoriaController {
 
     /**
+     * Asegura que gm_historias_medicas y gm_historias_examenes tengan las columnas requeridas
+     */
+    private static function asegurarEsquemaHistorias(PDO $pdo): void {
+        try {
+            $cols = $pdo->query("SHOW COLUMNS FROM gm_historias_medicas")->fetchAll(PDO::FETCH_COLUMN);
+            $requeridas = [
+                'cita_id'                 => "ALTER TABLE gm_historias_medicas ADD COLUMN cita_id INT NULL AFTER medico_id",
+                'motivo_consulta'         => "ALTER TABLE gm_historias_medicas ADD COLUMN motivo_consulta TEXT NULL",
+                'antecedentes_personales' => "ALTER TABLE gm_historias_medicas ADD COLUMN antecedentes_personales TEXT NULL",
+                'habitos_psicobiologicos' => "ALTER TABLE gm_historias_medicas ADD COLUMN habitos_psicobiologicos TEXT NULL",
+                'antecedentes_familiares' => "ALTER TABLE gm_historias_medicas ADD COLUMN antecedentes_familiares TEXT NULL",
+                'antecedentes_quirurgicos'=> "ALTER TABLE gm_historias_medicas ADD COLUMN antecedentes_quirurgicos TEXT NULL",
+                'menarquia'               => "ALTER TABLE gm_historias_medicas ADD COLUMN menarquia VARCHAR(50) NULL",
+                'sexarquia'               => "ALTER TABLE gm_historias_medicas ADD COLUMN sexarquia VARCHAR(50) NULL",
+                'ciclos_menstruales'      => "ALTER TABLE gm_historias_medicas ADD COLUMN ciclos_menstruales VARCHAR(50) NULL",
+                'fur'                     => "ALTER TABLE gm_historias_medicas ADD COLUMN fur VARCHAR(50) NULL",
+                'activa_sexual'           => "ALTER TABLE gm_historias_medicas ADD COLUMN activa_sexual VARCHAR(20) NULL",
+                'num_parejas'             => "ALTER TABLE gm_historias_medicas ADD COLUMN num_parejas VARCHAR(20) NULL",
+                'gt'                      => "ALTER TABLE gm_historias_medicas ADD COLUMN gt VARCHAR(20) NULL",
+                'pa'                      => "ALTER TABLE gm_historias_medicas ADD COLUMN pa VARCHAR(20) NULL",
+                'ab'                      => "ALTER TABLE gm_historias_medicas ADD COLUMN ab VARCHAR(20) NULL",
+                'cs'                      => "ALTER TABLE gm_historias_medicas ADD COLUMN cs VARCHAR(20) NULL",
+                'metodos_acos'            => "ALTER TABLE gm_historias_medicas ADD COLUMN metodos_acos VARCHAR(150) NULL",
+                'papanicolaou'            => "ALTER TABLE gm_historias_medicas ADD COLUMN papanicolaou VARCHAR(100) NULL",
+                'tension_arterial'        => "ALTER TABLE gm_historias_medicas ADD COLUMN tension_arterial VARCHAR(50) NULL",
+                'frecuencia_cardiaca'     => "ALTER TABLE gm_historias_medicas ADD COLUMN frecuencia_cardiaca VARCHAR(50) NULL",
+                'examen_mamario'          => "ALTER TABLE gm_historias_medicas ADD COLUMN examen_mamario TEXT NULL",
+                'examen_pelvico'          => "ALTER TABLE gm_historias_medicas ADD COLUMN examen_pelvico TEXT NULL",
+                'plan_medico'             => "ALTER TABLE gm_historias_medicas ADD COLUMN plan_medico TEXT NULL",
+                'tratamiento'             => "ALTER TABLE gm_historias_medicas ADD COLUMN tratamiento TEXT NULL",
+                'notas'                   => "ALTER TABLE gm_historias_medicas ADD COLUMN notas TEXT NULL",
+                'estado_historia'         => "ALTER TABLE gm_historias_medicas ADD COLUMN estado_historia VARCHAR(50) DEFAULT 'Completada'",
+                'hash_validacion'         => "ALTER TABLE gm_historias_medicas ADD COLUMN hash_validacion VARCHAR(64) NULL",
+                'pdf_path'                => "ALTER TABLE gm_historias_medicas ADD COLUMN pdf_path VARCHAR(255) NULL",
+                'url_informe_pdf'         => "ALTER TABLE gm_historias_medicas ADD COLUMN url_informe_pdf VARCHAR(255) NULL",
+            ];
+            foreach ($requeridas as $col => $sqlAlter) {
+                if (!in_array($col, $cols, true)) {
+                    try {
+                        $pdo->exec($sqlAlter);
+                    } catch (Exception $e) {}
+                }
+            }
+        } catch (Exception $e) {}
+    }
+
+    /**
      * GET /api/historias?paciente_id=X&medico_id=Y
      * Lista las historias médicas junto con sus exámenes complementarios asociados
      */
@@ -54,10 +101,15 @@ class HistoriaController {
             foreach ($historias as &$hist) {
                 $examStmt->execute([':hid' => $hist['id']]);
                 $hist['examenes'] = $examStmt->fetchAll(PDO::FETCH_ASSOC);
-                $hist['pdf_url']  = !empty($hist['url_pdf_informe'])
-                    ? $hist['url_pdf_informe']
-                    : (!empty($hist['pdf_path']) ? $hist['pdf_path'] : '/api/historias/pdf?id=' . $hist['id']);
+                $pdfUrl = !empty($hist['url_informe_pdf'])
+                    ? $hist['url_informe_pdf']
+                    : (!empty($hist['url_pdf_informe'])
+                        ? $hist['url_pdf_informe']
+                        : (!empty($hist['pdf_path']) ? $hist['pdf_path'] : '/api/historias/pdf?id=' . $hist['id']));
+                $hist['pdf_url']         = $pdfUrl;
+                $hist['url_informe_pdf'] = $pdfUrl;
             }
+            unset($hist);
 
             echo json_encode([
                 "status" => "success",
@@ -108,7 +160,8 @@ class HistoriaController {
 
     /**
      * POST /api/historias
-     * Guarda la historia clínica completa, exámenes relacionales, finanza BCV, cierra la cita y genera el informe PDF
+     * Guarda la historia clínica completa, exámenes relacionales, finanza BCV,
+     * cierra la cita, detiene el cronómetro de atención y genera el informe PDF
      */
     public static function crear($input) {
         $pdo = null;
@@ -117,21 +170,34 @@ class HistoriaController {
             $medicoId   = (int)($input['medico_id'] ?? 0);
             $citaId     = !empty($input['cita_id']) ? (int)$input['cita_id'] : null;
 
-            if ($pacienteId <= 0 || $medicoId <= 0 || empty($input['motivo_consulta']) || empty($input['diagnostico'])) {
+            $motivoConsulta = trim((string)($input['motivo_consulta'] ?? ''));
+            if ($motivoConsulta === '') {
+                $motivoConsulta = 'Consulta Médica';
+            }
+            $diagnostico = trim((string)($input['diagnostico'] ?? ''));
+
+            if ($pacienteId <= 0 || $medicoId <= 0 || $diagnostico === '') {
                 http_response_code(400);
                 echo json_encode([
                     "status"  => "error",
-                    "mensaje" => "Los campos paciente_id, medico_id, motivo_consulta y diagnostico son obligatorios."
+                    "mensaje" => "Los campos paciente_id, medico_id y diagnostico son obligatorios."
                 ], JSON_UNESCAPED_UNICODE);
                 return;
             }
 
             $pdo = Database::conectar();
+            self::asegurarEsquemaHistorias($pdo);
             $pdo->beginTransaction();
 
             // Si no vino cita_id explícito, buscar cita activa del día de hoy para ese paciente y médico
             if (!$citaId) {
-                $stmtCitaHoy = $pdo->prepare("SELECT id FROM gm_citas WHERE medico_id = :med AND paciente_id = :pac AND fecha_cita = CURDATE() AND LOWER(COALESCE(estado_cita, '')) NOT IN ('cancelada', 'cancelled', 'completada', 'completado') ORDER BY hora_cita ASC LIMIT 1");
+                $stmtCitaHoy = $pdo->prepare("
+                    SELECT id FROM gm_citas 
+                    WHERE medico_id = :med AND paciente_id = :pac AND fecha_cita = CURDATE() 
+                      AND LOWER(COALESCE(estado_cita, '')) NOT IN ('cancelada', 'cancelled', 'completada', 'completado') 
+                    ORDER BY CASE WHEN LOWER(estado_cita) = 'en_consulta' THEN 0 ELSE 1 END ASC, hora_cita ASC 
+                    LIMIT 1
+                ");
                 $stmtCitaHoy->execute([':med' => $medicoId, ':pac' => $pacienteId]);
                 $foundCitaId = (int)$stmtCitaHoy->fetchColumn();
                 if ($foundCitaId > 0) {
@@ -146,13 +212,14 @@ class HistoriaController {
             if ($peso !== null || $estatura !== null) {
                 $updCampos = [];
                 $updParams = [':uid' => $pacienteId];
-                if ($peso !== null && $peso !== '') {
+                if ($peso !== null && trim((string)$peso) !== '') {
+                    $pesoNum = (float)str_replace(',', '.', (string)$peso);
                     $updCampos[] = "peso = :peso";
-                    $updParams[':peso'] = (float)$peso;
+                    $updParams[':peso'] = $pesoNum;
                 }
-                if ($estatura !== null && $estatura !== '') {
+                if ($estatura !== null && trim((string)$estatura) !== '') {
                     $updCampos[] = "estatura = :est";
-                    $updParams[':est'] = trim($estatura);
+                    $updParams[':est'] = trim((string)$estatura);
                 }
                 if (!empty($updCampos)) {
                     $pdo->prepare("UPDATE gm_usuarios_extendidos SET " . implode(", ", $updCampos) . " WHERE user_id = :uid")
@@ -182,7 +249,7 @@ class HistoriaController {
                 ':pac'          => $pacienteId,
                 ':med'          => $medicoId,
                 ':cita'         => $citaId,
-                ':motivo'       => trim($input['motivo_consulta']),
+                ':motivo'       => $motivoConsulta,
                 ':ant_pers'     => $input['antecedentes_personales'] ?? null,
                 ':habitos'      => $input['habitos_psicobiologicos'] ?? null,
                 ':ant_fam'      => $input['antecedentes_familiares'] ?? null,
@@ -203,7 +270,7 @@ class HistoriaController {
                 ':fc'           => $input['frecuencia_cardiaca'] ?? null,
                 ':ex_mamario'   => $input['examen_mamario'] ?? null,
                 ':ex_pelvico'   => $input['examen_pelvico'] ?? null,
-                ':diagnostico'  => trim($input['diagnostico']),
+                ':diagnostico'  => $diagnostico,
                 ':plan'         => $input['plan_medico'] ?? null,
                 ':tratamiento'  => $input['tratamiento'] ?? null,
                 ':notas'        => $input['notas'] ?? null
@@ -225,24 +292,35 @@ class HistoriaController {
 
             if (!empty($examenes) && is_array($examenes)) {
                 $sqlExam = "INSERT INTO gm_historias_examenes 
-                    (historia_id, tipo_examen, descripcion_solicitud, resultado, estado_examen, archivo_adjunto_url) 
-                    VALUES (:hid, :tipo, :desc, :res, :estado, :url)";
+                    (historia_id, paciente_id, medico_id, tipo_examen, descripcion_solicitud, resultado, estado_examen, archivo_adjunto_url) 
+                    VALUES (:hid, :pac, :med, :tipo, :desc, :res, :estado, :url)";
                 $stmtExam = $pdo->prepare($sqlExam);
 
                 foreach ($examenes as $idx => $ex) {
-                    if (empty($ex['tipo']) && empty($ex['tipo_examen'])) {
+                    if (!is_array($ex) || (empty($ex['tipo']) && empty($ex['tipo_examen']))) {
                         continue;
                     }
 
                     $archivoUrl = $ex['archivo_adjunto_url'] ?? null;
+                    $uploadDir = __DIR__ . '/../../public/uploads/examenes/';
 
-                    if (isset($_FILES['examenes']['name'][$idx]['archivo']) && $_FILES['examenes']['error'][$idx]['archivo'] === UPLOAD_ERR_OK) {
-                        $uploadDir = __DIR__ . '/../../public/uploads/examenes/';
+                    // Soporte formato multipart plano: examenes_archivo_0, examenes_archivo_1...
+                    $flatKey = 'examenes_archivo_' . $idx;
+                    if (isset($_FILES[$flatKey]) && $_FILES[$flatKey]['error'] === UPLOAD_ERR_OK) {
                         if (!is_dir($uploadDir)) {
-                            mkdir($uploadDir, 0755, true);
+                            mkdir($uploadDir, 0775, true);
+                        }
+                        $ext = pathinfo($_FILES[$flatKey]['name'], PATHINFO_EXTENSION);
+                        $fileName = 'exam_' . $historiaId . '_' . $idx . '_' . time() . ($ext ? '.' . $ext : '');
+                        if (move_uploaded_file($_FILES[$flatKey]['tmp_name'], $uploadDir . $fileName)) {
+                            $archivoUrl = '/uploads/examenes/' . $fileName;
+                        }
+                    } elseif (isset($_FILES['examenes']['name'][$idx]['archivo']) && $_FILES['examenes']['error'][$idx]['archivo'] === UPLOAD_ERR_OK) {
+                        if (!is_dir($uploadDir)) {
+                            mkdir($uploadDir, 0775, true);
                         }
                         $ext = pathinfo($_FILES['examenes']['name'][$idx]['archivo'], PATHINFO_EXTENSION);
-                        $fileName = 'exam_' . $historiaId . '_' . $idx . '_' . time() . '.' . $ext;
+                        $fileName = 'exam_' . $historiaId . '_' . $idx . '_' . time() . ($ext ? '.' . $ext : '');
                         if (move_uploaded_file($_FILES['examenes']['tmp_name'][$idx]['archivo'], $uploadDir . $fileName)) {
                             $archivoUrl = '/uploads/examenes/' . $fileName;
                         }
@@ -251,10 +329,12 @@ class HistoriaController {
                     $obs = $ex['observaciones'] ?? $ex['descripcion_solicitud'] ?? null;
                     $stmtExam->execute([
                         ':hid'    => $historiaId,
-                        ':tipo'   => trim($ex['tipo'] ?? $ex['tipo_examen']),
+                        ':pac'    => $pacienteId,
+                        ':med'    => $medicoId,
+                        ':tipo'   => trim((string)($ex['tipo'] ?? $ex['tipo_examen'])),
                         ':desc'   => $obs,
                         ':res'    => $ex['resultado'] ?? $obs,
-                        ':estado' => trim($ex['estatus'] ?? $ex['estado_examen'] ?? 'Pendiente'),
+                        ':estado' => trim((string)($ex['estatus'] ?? $ex['estado_examen'] ?? 'Pendiente')),
                         ':url'    => $archivoUrl
                     ]);
                 }
@@ -266,7 +346,7 @@ class HistoriaController {
                 $pacStmt = $pdo->prepare("SELECT nombre, apellido FROM gm_usuarios_extendidos WHERE user_id = :uid LIMIT 1");
                 $pacStmt->execute([':uid' => $pacienteId]);
                 $pacInfo = $pacStmt->fetch(PDO::FETCH_ASSOC);
-                $nombrePac = $pacInfo ? ($pacInfo['nombre'] . ' ' . $pacInfo['apellido']) : 'Paciente';
+                $nombrePac = $pacInfo ? trim($pacInfo['nombre'] . ' ' . $pacInfo['apellido']) : 'Paciente';
 
                 $tasaVal = $pdo->query("SELECT tasa_usd FROM gm_tasa_bcv ORDER BY fecha DESC LIMIT 1")->fetchColumn();
                 $tasaBcv = ($tasaVal && (float)$tasaVal > 0) ? (float)$tasaVal : 1.0000;
@@ -290,10 +370,22 @@ class HistoriaController {
                 ]);
             }
 
-            // 5. Marcar la cita asociada como 'completada'
+            // 5. Marcar la cita asociada como 'completada' y DETENER EL CRONÓMETRO en gm_tiempo_atencion
             if ($citaId) {
                 $pdo->prepare("UPDATE gm_citas SET estado_cita = 'completada' WHERE id = :cid")
                     ->execute([':cid' => $citaId]);
+
+                if (class_exists(CitaController::class) && method_exists(CitaController::class, 'finalizarTiempoAtencion')) {
+                    CitaController::finalizarTiempoAtencion($pdo, (int)$citaId);
+                } else {
+                    $stmtT = $pdo->prepare("SELECT id FROM gm_tiempo_atencion WHERE cita_id = :cid AND estado = 'en_proceso' ORDER BY id DESC LIMIT 1");
+                    $stmtT->execute([':cid' => $citaId]);
+                    $tid = (int)$stmtT->fetchColumn();
+                    if ($tid > 0) {
+                        $pdo->prepare("UPDATE gm_tiempo_atencion SET fin = NOW(), tiempo = GREATEST(1, TIMESTAMPDIFF(SECOND, inicio, NOW())), estado = 'completado' WHERE id = :id")
+                            ->execute([':id' => $tid]);
+                    }
+                }
             }
 
             // 6. Generar archivo oficial del Informe Médico con tema/colores dinámicos del médico
@@ -301,7 +393,14 @@ class HistoriaController {
                 'color_primario'   => $input['color_primario'] ?? null,
                 'color_secundario' => $input['color_secundario'] ?? null,
             ];
-            $generado = InformeMedicoPdfGenerator::generarInformeMedicoPdf($historiaId, $pdo, $temaOverride);
+            $generado = [];
+            if (class_exists(InformeMedicoPdfGenerator::class)) {
+                $generado = InformeMedicoPdfGenerator::generarInformeMedicoPdf($historiaId, $pdo, $temaOverride);
+            }
+
+            $pdfUrlFinal = !empty($generado['url']) ? $generado['url'] : ("/api/historias/pdf?id=" . $historiaId);
+            $pdo->prepare("UPDATE gm_historias_medicas SET url_informe_pdf = :url, pdf_path = :url WHERE id = :id")
+                ->execute([':url' => $pdfUrlFinal, ':id' => $historiaId]);
 
             $pdo->commit();
 
@@ -312,7 +411,7 @@ class HistoriaController {
                 "historia_id"     => $historiaId,
                 "cita_id"         => $citaId,
                 "hash_validacion" => $hashValidacion,
-                "pdf_url"         => !empty($generado['url']) ? $generado['url'] : ("/api/historias/pdf?id=" . $historiaId)
+                "pdf_url"         => $pdfUrlFinal
             ], JSON_UNESCAPED_UNICODE);
 
         } catch (Exception $e) {

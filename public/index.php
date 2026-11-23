@@ -49,6 +49,9 @@ require_once __DIR__ . '/../src/Config/Database.php';
 require_once __DIR__ . '/../src/Documentos/InformeMedicoPdfGenerator.php';
 require_once __DIR__ . '/../src/Documentos/ValidadorInformePublico.php';
 require_once __DIR__ . '/../src/Documentos/FacturaPdfGenerator.php';
+if (file_exists(__DIR__ . '/../src/Documentos/PresupuestoPdfGenerator.php')) {
+    require_once __DIR__ . '/../src/Documentos/PresupuestoPdfGenerator.php';
+}
 require_once __DIR__ . '/../src/Controllers/CatalogoController.php';
 require_once __DIR__ . '/../src/Controllers/PacienteController.php';
 require_once __DIR__ . '/../src/Controllers/PacientePerfilController.php';
@@ -319,6 +322,21 @@ if ($uri === '/' || $uri === '/api') {
 
 } elseif ($uri === '/api/finanzas/facturar' && $method === 'POST') {
     FinanzaServicioController::facturarMovimiento($input);
+
+} elseif ($uri === '/api/presupuestos' && $method === 'GET') {
+    FinanzaServicioController::listarPresupuestos();
+
+} elseif ($uri === '/api/presupuestos' && $method === 'POST') {
+    FinanzaServicioController::crearPresupuesto($input);
+
+} elseif (preg_match('#^/api/presupuestos/(\d+)/aprobar$#', $uri, $matches) && $method === 'POST') {
+    FinanzaServicioController::aprobarYCargarPresupuesto((int)$matches[1], $input);
+
+} elseif (($uri === '/validar-presupuesto' || $uri === '/api/validar-presupuesto') && $method === 'GET') {
+    if (ob_get_length()) {
+        ob_clean();
+    }
+    \App\Documentos\PresupuestoPdfGenerator::renderizarValidadorPublico();
 
 } elseif (($uri === '/validar-factura' || $uri === '/api/validar-factura') && $method === 'GET') {
     if (ob_get_length()) {

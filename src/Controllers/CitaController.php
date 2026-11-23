@@ -8,7 +8,9 @@ use Exception;
 class CitaController {
 
     /**
-     * Asegura que existan las columnas y tablas necesarias para cola y check-in QR.
+     * Asegura que existan las columnas y tablas necesarias para cola, check-in QR y control de tiempos.
+     * Alineado con la estructura real de gm_tiempo_atencion:
+     * (id, cita_id, medico_id, paciente_id, dia, tiempo, estado, inicio, fin)
      */
     private static function asegurarEsquemaCola(PDO $pdo): void {
         try {
@@ -25,12 +27,14 @@ class CitaController {
             $pdo->exec("
                 CREATE TABLE IF NOT EXISTS gm_tiempo_atencion (
                     id INT AUTO_INCREMENT PRIMARY KEY,
-                    medico_id INT NOT NULL,
                     cita_id INT NOT NULL,
-                    hora_inicio DATETIME NOT NULL,
-                    hora_fin DATETIME NULL,
-                    duracion_minutos INT DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    medico_id INT NOT NULL,
+                    paciente_id INT NOT NULL DEFAULT 0,
+                    dia DATE NOT NULL,
+                    tiempo INT NOT NULL DEFAULT 0,
+                    estado VARCHAR(30) NOT NULL DEFAULT 'en_proceso',
+                    inicio DATETIME NOT NULL,
+                    fin DATETIME NULL
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             ");
         } catch (Exception $e) {}
@@ -64,6 +68,34 @@ class CitaController {
         } catch (Exception $e) {}
 
         return $paleta;
+    }
+
+    /**
+     * Calcula el tiempo promedio de atención (en minutos) de un médico
+     * a partir de los registros completados en gm_tiempo_atencion.
+     */
+    private static function obtenerPromedioAtencionMinutos(PDO $pdo, int $medicoId): float {
+        $promedioMin = 15.0; // Valor por defecto si aún no hay consultas completadas
+        if ($medicoId <= 0) {
+            return $promedioMin;
+        }
+
+        try {
+            $promStmt = $pdo->prepare("
+                SELECT AVG(tiempo) / 60 
+                FROM gm_tiempo_atencion 
+                WHERE medico_id = :med 
+                  AND estado = 'completado' 
+                  AND tiempo > 0
+            ");
+            $promStmt->execute([':med' => $medicoId]);
+            $valProm = (float)$promStmt->fetchColumn();
+            if ($valProm > 0) {
+                $promedioMin = $valProm;
+            }
+        } catch (Exception $e) {}
+
+        return $promedioMin;
     }
 
     /**
@@ -202,6 +234,8 @@ class CitaController {
 
     /**
      * GET /api/citas?medico_id=X&paciente_id=Y&fecha=YYYY-MM-DD
+     * Devuelve también pacientes_delante y tiempo_estimado_min calculados dinámicamente
+     * para mostrarle al paciente su tiempo aproximado de espera.
      */
     public static function listar() {
         try {
@@ -262,10 +296,29 @@ class CitaController {
             $citas = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
             $updMonto = $pdo->prepare("UPDATE gm_citas SET total_usd = :total WHERE id = :id");
+            $cachePromedios = [];
+
+            $stmtColaEnConsulta = $pdo->prepare("
+                SELECT COUNT(*) FROM gm_citas 
+                WHERE medico_id = :med AND fecha_cita = :fecha 
+                  AND estado_cita COLLATE utf8mb4_unicode_ci = 'en_consulta'
+            ");
+            $stmtColaEsperaDelante = $pdo->prepare("
+                SELECT COUNT(*) FROM gm_citas 
+                WHERE medico_id = :med AND fecha_cita = :fecha 
+                  AND estado_cita COLLATE utf8mb4_unicode_ci = 'en_espera'
+                  AND id != :id
+                  AND (
+                      (:turno > 0 AND numero_llegada > 0 AND numero_llegada < :turno)
+                      OR (:turno <= 0)
+                  )
+            ");
+
             foreach ($citas as &$cita) {
+                $medId = (int)$cita['medico_id'];
                 $resServicios = self::resolverServiciosCita(
                     $pdo,
-                    (int)$cita['medico_id'],
+                    $medId,
                     (string)($cita['procedimiento'] ?? '')
                 );
 
@@ -278,13 +331,41 @@ class CitaController {
                     ]);
                 }
 
-                $montoFormateado        = number_format($montoGuardado, 2, '.', '');
-                $cita['servicios']      = $resServicios['servicios'];
-                $cita['total_usd']      = $montoFormateado;
-                $cita['monto_usd']      = $montoFormateado;
-                $cita['monto_total']    = $montoFormateado;
-                $cita['numero_llegada'] = (int)($cita['numero_llegada'] ?? 0);
-                $cita['tipo_cita']      = trim((string)($cita['tipo_cita'] ?? 'Hora Programada'));
+                if (!isset($cachePromedios[$medId])) {
+                    $cachePromedios[$medId] = self::obtenerPromedioAtencionMinutos($pdo, $medId);
+                }
+                $promMin = $cachePromedios[$medId];
+
+                $pacientesDelante = 0;
+                $tiempoEstimadoMin = 0;
+                $estadoLower = strtolower(trim((string)($cita['estado_cita'] ?? '')));
+
+                if (in_array($estadoLower, ['reservada', 'confirmada', 'en_espera'], true)) {
+                    $stmtColaEnConsulta->execute([':med' => $medId, ':fecha' => $cita['fecha_cita']]);
+                    $enConsulta = (int)$stmtColaEnConsulta->fetchColumn();
+
+                    $stmtColaEsperaDelante->execute([
+                        ':med'   => $medId,
+                        ':fecha' => $cita['fecha_cita'],
+                        ':id'    => (int)$cita['id'],
+                        ':turno' => (int)($cita['numero_llegada'] ?? 0)
+                    ]);
+                    $enEsperaDelante = (int)$stmtColaEsperaDelante->fetchColumn();
+
+                    $pacientesDelante  = $enConsulta + $enEsperaDelante;
+                    $tiempoEstimadoMin = (int)round($pacientesDelante * $promMin);
+                }
+
+                $montoFormateado             = number_format($montoGuardado, 2, '.', '');
+                $cita['servicios']           = $resServicios['servicios'];
+                $cita['total_usd']           = $montoFormateado;
+                $cita['monto_usd']           = $montoFormateado;
+                $cita['monto_total']         = $montoFormateado;
+                $cita['numero_llegada']      = (int)($cita['numero_llegada'] ?? 0);
+                $cita['tipo_cita']           = trim((string)($cita['tipo_cita'] ?? 'Hora Programada'));
+                $cita['promedio_atencion_min'] = (int)round($promMin);
+                $cita['pacientes_delante']   = $pacientesDelante;
+                $cita['tiempo_estimado_min'] = $tiempoEstimadoMin;
             }
             unset($cita);
 
@@ -455,7 +536,8 @@ class CitaController {
 
     /**
      * PUT /api/citas
-     * Permite cambiar estado (confirmar, en_espera, cancelar), reprogramar fecha/hora o actualizar procedimiento/monto
+     * Permite cambiar estado (confirmar, en_espera, en_consulta, completada, cancelar),
+     * reprogramar fecha/hora y gestionar automáticamente el cronómetro de gm_tiempo_atencion.
      */
     public static function actualizar($input) {
         try {
@@ -481,6 +563,7 @@ class CitaController {
 
             $campos = [];
             $params = [':id' => $citaId];
+            $nuevoEstado = '';
 
             if (!empty($input['estado_cita'])) {
                 $nuevoEstado = trim((string)$input['estado_cita']);
@@ -536,6 +619,19 @@ class CitaController {
             $stmt = $pdo->prepare($sql);
             $stmt->execute($params);
 
+            // Sincronización automática de gm_tiempo_atencion según el cambio de estado
+            $estadoLower = strtolower($nuevoEstado);
+            if ($estadoLower === 'en_consulta') {
+                self::registrarInicioTiempoAtencion(
+                    $pdo,
+                    $citaId,
+                    (int)$citaActual['medico_id'],
+                    (int)$citaActual['paciente_id']
+                );
+            } elseif ($estadoLower === 'completada') {
+                self::finalizarTiempoAtencion($pdo, $citaId);
+            }
+
             echo json_encode([
                 "status"  => "success",
                 "mensaje" => "Cita actualizada correctamente."
@@ -544,6 +640,69 @@ class CitaController {
         } catch (Exception $e) {
             http_response_code(500);
             echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * Inicia el registro de tiempo en gm_tiempo_atencion (evitando duplicados si ya está en_proceso)
+     */
+    public static function registrarInicioTiempoAtencion(PDO $pdo, int $citaId, int $medicoId, int $pacienteId = 0): void {
+        self::asegurarEsquemaCola($pdo);
+        if ($citaId <= 0) {
+            return;
+        }
+
+        if ($medicoId <= 0 || $pacienteId <= 0) {
+            $stmtC = $pdo->prepare("SELECT medico_id, paciente_id FROM gm_citas WHERE id = :cid LIMIT 1");
+            $stmtC->execute([':cid' => $citaId]);
+            $rowC = $stmtC->fetch(PDO::FETCH_ASSOC);
+            if ($rowC) {
+                if ($medicoId <= 0) $medicoId = (int)$rowC['medico_id'];
+                if ($pacienteId <= 0) $pacienteId = (int)$rowC['paciente_id'];
+            }
+        }
+
+        $check = $pdo->prepare("SELECT id FROM gm_tiempo_atencion WHERE cita_id = :cid AND estado = 'en_proceso' LIMIT 1");
+        $check->execute([':cid' => $citaId]);
+        if (!$check->fetchColumn()) {
+            $ins = $pdo->prepare("
+                INSERT INTO gm_tiempo_atencion (cita_id, medico_id, paciente_id, dia, tiempo, estado, inicio)
+                VALUES (:cid, :med, :pac, CURDATE(), 0, 'en_proceso', NOW())
+            ");
+            $ins->execute([
+                ':cid' => $citaId,
+                ':med' => $medicoId,
+                ':pac' => $pacienteId
+            ]);
+        }
+    }
+
+    /**
+     * Detiene el cronómetro en gm_tiempo_atencion y guarda la duración en segundos
+     */
+    public static function finalizarTiempoAtencion(PDO $pdo, int $citaId): void {
+        self::asegurarEsquemaCola($pdo);
+        if ($citaId <= 0) {
+            return;
+        }
+
+        $stmt = $pdo->prepare("
+            SELECT id FROM gm_tiempo_atencion 
+            WHERE cita_id = :cid AND estado = 'en_proceso' 
+            ORDER BY id DESC LIMIT 1
+        ");
+        $stmt->execute([':cid' => $citaId]);
+        $tiempoId = (int)$stmt->fetchColumn();
+
+        if ($tiempoId > 0) {
+            $upd = $pdo->prepare("
+                UPDATE gm_tiempo_atencion 
+                SET fin = NOW(),
+                    tiempo = GREATEST(1, TIMESTAMPDIFF(SECOND, inicio, NOW())),
+                    estado = 'completado'
+                WHERE id = :id
+            ");
+            $upd->execute([':id' => $tiempoId]);
         }
     }
 
@@ -619,16 +778,17 @@ class CitaController {
         $delanteStmt->execute([':med' => $medicoId, ':hoy' => $hoy, ':turno' => $turnoAsignado]);
         $pacientesDelante = (int)$delanteStmt->fetchColumn();
 
-        $promedioMin = 20;
-        try {
-            $promStmt = $pdo->prepare("SELECT AVG(duracion_minutos) FROM gm_tiempo_atencion WHERE medico_id = :med AND duracion_minutos > 0");
-            $promStmt->execute([':med' => $medicoId]);
-            $valProm = (float)$promStmt->fetchColumn();
-            if ($valProm > 0) {
-                $promedioMin = $valProm;
-            }
-        } catch (Exception $e) {}
+        $enConsultaStmt = $pdo->prepare("
+            SELECT COUNT(*) 
+            FROM gm_citas 
+            WHERE medico_id = :med 
+              AND fecha_cita = :hoy 
+              AND estado_cita COLLATE utf8mb4_unicode_ci = 'en_consulta'
+        ");
+        $enConsultaStmt->execute([':med' => $medicoId, ':hoy' => $hoy]);
+        $pacientesDelante += (int)$enConsultaStmt->fetchColumn();
 
+        $promedioMin       = self::obtenerPromedioAtencionMinutos($pdo, $medicoId);
         $tiempoEstimadoMin = (int)round($pacientesDelante * $promedioMin);
 
         return [
@@ -640,6 +800,7 @@ class CitaController {
             'tipo_cita'           => trim((string)($cita['tipo_cita'] ?? 'Orden de Llegada')),
             'numero_turno'        => $turnoAsignado,
             'pacientes_delante'   => $pacientesDelante,
+            'promedio_min'        => (int)round($promedioMin),
             'tiempo_estimado_min' => $tiempoEstimadoMin,
         ];
     }
@@ -859,7 +1020,7 @@ class CitaController {
                     <div style="font-size:11px;color:var(--theme-text-secondary);margin-top:12px;font-weight:600;">SU TURNO EN SALA DE ESPERA ES</div>
                     <div class="turno-num">#' . (int)$resultado['numero_turno'] . '</div>
                     <div style="font-size:14px;color:var(--theme-text-primary);">Pacientes delante: <strong>' . (int)$resultado['pacientes_delante'] . '</strong></div>
-                    <div style="font-size:14px;color:var(--theme-text-primary);margin-top:4px;">Tiempo estimado: <strong>' . (int)$resultado['tiempo_estimado_min'] . ' min</strong></div>
+                    <div style="font-size:14px;color:var(--theme-text-primary);margin-top:4px;">Tiempo aproximado de espera: <strong>~' . (int)$resultado['tiempo_estimado_min'] . ' min</strong></div>
                   </div>';
         } else {
             if ($resultado !== null && $resultado['status'] === 'error') {
@@ -878,11 +1039,13 @@ class CitaController {
 
     /**
      * POST /api/citas/iniciar-atencion
+     * Inicia la consulta del paciente y guarda el registro inicial en gm_tiempo_atencion
      */
     public static function iniciarAtencion($input) {
         try {
-            $citaId   = (int)($input['cita_id'] ?? 0);
-            $medicoId = (int)($input['medico_id'] ?? 0);
+            $citaId     = (int)($input['cita_id'] ?? 0);
+            $medicoId   = (int)($input['medico_id'] ?? 0);
+            $pacienteId = (int)($input['paciente_id'] ?? 0);
 
             if ($citaId <= 0 || $medicoId <= 0) {
                 http_response_code(400);
@@ -893,9 +1056,10 @@ class CitaController {
             $pdo = Database::conectar();
             self::asegurarEsquemaCola($pdo);
 
-            $pdo->prepare("UPDATE gm_citas SET estado_cita = 'en_consulta' WHERE id = :cid")->execute([':cid' => $citaId]);
-            $pdo->prepare("INSERT INTO gm_tiempo_atencion (medico_id, cita_id, hora_inicio) VALUES (:med, :cid, NOW())")
-                ->execute([':med' => $medicoId, ':cid' => $citaId]);
+            $pdo->prepare("UPDATE gm_citas SET estado_cita = 'en_consulta' WHERE id = :cid")
+                ->execute([':cid' => $citaId]);
+
+            self::registrarInicioTiempoAtencion($pdo, $citaId, $medicoId, $pacienteId);
 
             echo json_encode([
                 "status"  => "success",
