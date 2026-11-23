@@ -99,6 +99,43 @@ class CitaController {
     }
 
     /**
+     * Calcula cuántos minutos le restan a la consulta que está actualmente 'en_consulta'
+     * descontando los minutos que ya lleva transcurridos en gm_tiempo_atencion.
+     */
+    private static function calcularTiempoRestanteConsultaActualMin(PDO $pdo, int $medicoId, string $fechaCita, float $promedioMin): float {
+        if ($medicoId <= 0) {
+            return $promedioMin;
+        }
+
+        try {
+            $stmt = $pdo->prepare("
+                SELECT GREATEST(0, TIMESTAMPDIFF(SECOND, t.inicio, NOW())) AS transcurrido_seg
+                FROM gm_citas c
+                LEFT JOIN gm_tiempo_atencion t 
+                       ON t.cita_id = c.id 
+                      AND t.estado = 'en_proceso'
+                WHERE c.medico_id = :med
+                  AND c.fecha_cita = :fecha
+                  AND c.estado_cita COLLATE utf8mb4_unicode_ci = 'en_consulta'
+                ORDER BY t.id DESC, c.id ASC
+                LIMIT 1
+            ");
+            $stmt->execute([
+                ':med'   => $medicoId,
+                ':fecha' => $fechaCita
+            ]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($row && $row['transcurrido_seg'] !== null) {
+                $transcurridoMin = ((float)$row['transcurrido_seg']) / 60.0;
+                return max(1.0, $promedioMin - $transcurridoMin);
+            }
+        } catch (Exception $e) {}
+
+        return $promedioMin;
+    }
+
+    /**
      * Determina la modalidad ('Orden de Llegada' o 'Hora Programada') de un calendario
      * para una fecha específica leyendo dias_config.
      */
@@ -235,7 +272,7 @@ class CitaController {
     /**
      * GET /api/citas?medico_id=X&paciente_id=Y&fecha=YYYY-MM-DD
      * Devuelve también pacientes_delante y tiempo_estimado_min calculados dinámicamente
-     * para mostrarle al paciente su tiempo aproximado de espera.
+     * descontando el tiempo que ya lleva transcurrido la consulta en curso.
      */
     public static function listar() {
         try {
@@ -297,6 +334,7 @@ class CitaController {
 
             $updMonto = $pdo->prepare("UPDATE gm_citas SET total_usd = :total WHERE id = :id");
             $cachePromedios = [];
+            $cacheRestanteConsulta = [];
 
             $stmtColaEnConsulta = $pdo->prepare("
                 SELECT COUNT(*) FROM gm_citas 
@@ -316,6 +354,8 @@ class CitaController {
 
             foreach ($citas as &$cita) {
                 $medId = (int)$cita['medico_id'];
+                $fechaCita = (string)$cita['fecha_cita'];
+
                 $resServicios = self::resolverServiciosCita(
                     $pdo,
                     $medId,
@@ -341,13 +381,13 @@ class CitaController {
                 $estadoLower = strtolower(trim((string)($cita['estado_cita'] ?? '')));
 
                 if (in_array($estadoLower, ['reservada', 'confirmada', 'en_espera'], true)) {
-                    $stmtColaEnConsulta->execute([':med' => $medId, ':fecha' => $cita['fecha_cita']]);
+                    $stmtColaEnConsulta->execute([':med' => $medId, ':fecha' => $fechaCita]);
                     $enConsulta = (int)$stmtColaEnConsulta->fetchColumn();
 
                     $turnoActual = (int)($cita['numero_llegada'] ?? 0);
                     $stmtColaEsperaDelante->execute([
                         ':med'    => $medId,
-                        ':fecha'  => $cita['fecha_cita'],
+                        ':fecha'  => $fechaCita,
                         ':id'     => (int)$cita['id'],
                         ':turno1' => $turnoActual,
                         ':turno2' => $turnoActual,
@@ -355,8 +395,24 @@ class CitaController {
                     ]);
                     $enEsperaDelante = (int)$stmtColaEsperaDelante->fetchColumn();
 
-                    $pacientesDelante  = $enConsulta + $enEsperaDelante;
-                    $tiempoEstimadoMin = (int)round($pacientesDelante * $promMin);
+                    $pacientesDelante = $enConsulta + $enEsperaDelante;
+
+                    // Si hay alguien en consulta actualmente, restar los minutos que ya lleva atendidos
+                    $tiempoConsultaActualMin = 0.0;
+                    if ($enConsulta > 0) {
+                        $cacheKey = $medId . '_' . $fechaCita;
+                        if (!isset($cacheRestanteConsulta[$cacheKey])) {
+                            $cacheRestanteConsulta[$cacheKey] = self::calcularTiempoRestanteConsultaActualMin(
+                                $pdo,
+                                $medId,
+                                $fechaCita,
+                                $promMin
+                            );
+                        }
+                        $tiempoConsultaActualMin = $cacheRestanteConsulta[$cacheKey];
+                    }
+
+                    $tiempoEstimadoMin = (int)round($tiempoConsultaActualMin + ($enEsperaDelante * $promMin));
                 }
 
                 $montoFormateado               = number_format($montoGuardado, 2, '.', '');
@@ -779,7 +835,7 @@ class CitaController {
               AND numero_llegada < :turno
         ");
         $delanteStmt->execute([':med' => $medicoId, ':hoy' => $hoy, ':turno' => $turnoAsignado]);
-        $pacientesDelante = (int)$delanteStmt->fetchColumn();
+        $enEsperaDelante = (int)$delanteStmt->fetchColumn();
 
         $enConsultaStmt = $pdo->prepare("
             SELECT COUNT(*) 
@@ -789,10 +845,16 @@ class CitaController {
               AND estado_cita COLLATE utf8mb4_unicode_ci = 'en_consulta'
         ");
         $enConsultaStmt->execute([':med' => $medicoId, ':hoy' => $hoy]);
-        $pacientesDelante += (int)$enConsultaStmt->fetchColumn();
+        $enConsulta = (int)$enConsultaStmt->fetchColumn();
 
-        $promedioMin       = self::obtenerPromedioAtencionMinutos($pdo, $medicoId);
-        $tiempoEstimadoMin = (int)round($pacientesDelante * $promedioMin);
+        $pacientesDelante = $enEsperaDelante + $enConsulta;
+        $promedioMin      = self::obtenerPromedioAtencionMinutos($pdo, $medicoId);
+
+        $tiempoConsultaActualMin = ($enConsulta > 0)
+            ? self::calcularTiempoRestanteConsultaActualMin($pdo, $medicoId, $hoy, $promedioMin)
+            : 0.0;
+
+        $tiempoEstimadoMin = (int)round($tiempoConsultaActualMin + ($enEsperaDelante * $promedioMin));
 
         return [
             'http'                => 200,
