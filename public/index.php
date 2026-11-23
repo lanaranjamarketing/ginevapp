@@ -127,6 +127,9 @@ if ($uri === '/' || $uri === '/api') {
             "GET /api/archivo",
             "POST /api/archivo/examenes",
             "PUT /api/archivo/examenes",
+            "PUT /api/archivo/examenes/{id}",
+            "POST /api/archivo/examenes/{id}",
+            "DELETE /api/archivo/examenes/{id}",
             "POST /api/archivo/examenes/actualizar",
             "GET /api/servicios",
             "POST /api/servicios",
@@ -268,6 +271,15 @@ if ($uri === '/' || $uri === '/api') {
 
 } elseif (($uri === '/api/archivo/examenes' && $method === 'PUT') || ($uri === '/api/archivo/examenes/actualizar' && $method === 'POST')) {
     ArchivoController::actualizarExamen($input);
+
+} elseif (preg_match('#^/api/archivo/examenes/(\d+)$#', $uri, $matches) && in_array($method, ['PUT', 'POST'], true)) {
+    ArchivoController::actualizarExamen($input, (int)$matches[1]);
+
+} elseif ($uri === '/api/archivo/examenes' && $method === 'DELETE') {
+    ArchivoController::eliminarExamen(0);
+
+} elseif (preg_match('#^/api/archivo/examenes/(\d+)$#', $uri, $matches) && $method === 'DELETE') {
+    ArchivoController::eliminarExamen((int)$matches[1]);
 
 } elseif ($uri === '/api/archivo/historias' && in_array($method, ['PUT', 'POST'], true)) {
     ArchivoController::actualizarHistoria($input);

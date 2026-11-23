@@ -13,7 +13,7 @@ class ArchivoController {
     /**
      * Garantiza de forma segura que gm_historias_examenes soporte exámenes
      * asociados a historias, múltiples archivos adjuntos, responsable de carga,
-     * observaciones del Dr y estudios independientes.
+     * observaciones del médico y estudios independientes.
      */
     private static function asegurarEsquema(PDO $pdo): void {
         if (self::$esquemaVerificado) {
@@ -24,12 +24,13 @@ class ArchivoController {
             $pdo->exec("ALTER TABLE `gm_historias_examenes` MODIFY COLUMN `archivo_adjunto_url` text DEFAULT NULL");
 
             $columnas = [
-                'paciente_id'       => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `paciente_id` bigint(20) DEFAULT NULL AFTER `historia_id`",
-                'medico_id'         => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `medico_id` bigint(20) DEFAULT NULL AFTER `paciente_id`",
-                'responsable_carga' => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `responsable_carga` varchar(30) NOT NULL DEFAULT 'medico' AFTER `tipo_examen`",
-                'observaciones'     => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `observaciones` text DEFAULT NULL AFTER `descripcion_solicitud`",
-                'observaciones_dr'  => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `observaciones_dr` text DEFAULT NULL AFTER `observaciones`",
-                'fecha_examen'      => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `fecha_examen` date DEFAULT NULL AFTER `archivo_adjunto_url`",
+                'paciente_id'          => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `paciente_id` bigint(20) DEFAULT NULL AFTER `historia_id`",
+                'medico_id'            => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `medico_id` bigint(20) DEFAULT NULL AFTER `paciente_id`",
+                'responsable_carga'    => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `responsable_carga` varchar(30) NOT NULL DEFAULT 'medico' AFTER `tipo_examen`",
+                'observaciones'        => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `observaciones` text DEFAULT NULL AFTER `descripcion_solicitud`",
+                'observaciones_dr'     => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `observaciones_dr` text DEFAULT NULL AFTER `observaciones`",
+                'observaciones_medico' => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `observaciones_medico` text DEFAULT NULL AFTER `observaciones_dr`",
+                'fecha_examen'         => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `fecha_examen` date DEFAULT NULL AFTER `archivo_adjunto_url`",
             ];
 
             foreach ($columnas as $col => $sql) {
@@ -116,6 +117,25 @@ class ArchivoController {
     }
 
     /**
+     * Elimina archivos físicos de /public/uploads/examenes/ si ya no se utilizan.
+     */
+    private static function eliminarArchivosFisicos(array $rutas): void {
+        $basePublic = realpath(__DIR__ . '/../../public');
+        if (!$basePublic) {
+            return;
+        }
+        foreach ($rutas as $ruta) {
+            $str = trim((string)$ruta);
+            if (preg_match('#(/uploads/examenes/[^?\s]+)#', $str, $m)) {
+                $fullPath = $basePublic . $m[1];
+                if (is_file($fullPath)) {
+                    @unlink($fullPath);
+                }
+            }
+        }
+    }
+
+    /**
      * Procesa archivos adjuntos enviados en Base64 dentro del JSON ('archivos_base64')
      * o mediante $_FILES ('archivos[]', 'archivo', 'file') y los guarda en /public/uploads/examenes/.
      */
@@ -162,7 +182,7 @@ class ArchivoController {
             }
         }
 
-        // 2. Respaldo para multipart/form-data tradicional ($_FILES)
+        // 2. Multipart/form-data ($_FILES)
         if (!empty($_FILES)) {
             $archivosParaProcesar = [];
 
@@ -208,6 +228,24 @@ class ArchivoController {
         }
 
         return $rutasGuardadas;
+    }
+
+    /**
+     * Normaliza las filas de exámenes para asegurar observaciones_medico y responsable_carga consistentes.
+     */
+    private static function enriquecerFilaExamen(array $ex): array {
+        $obsMed = trim((string)($ex['observaciones_medico'] ?? ''));
+        if ($obsMed === '') {
+            $obsMed = trim((string)($ex['observaciones_dr'] ?? ''));
+        }
+        if ($obsMed === '') {
+            $obsMed = trim((string)($ex['observaciones'] ?? ''));
+        }
+        $ex['observaciones_medico'] = $obsMed;
+        $ex['observaciones_dr']     = $obsMed;
+        $ex['observaciones']        = $obsMed;
+        $ex['responsable_carga']    = self::normalizarResponsableCarga($ex['responsable_carga'] ?? 'medico');
+        return $ex;
     }
 
     /**
@@ -276,7 +314,8 @@ class ArchivoController {
             $stmtExamPorHist = $pdo->prepare("SELECT * FROM gm_historias_examenes WHERE historia_id = :hid ORDER BY id ASC");
             foreach ($consultas as &$c) {
                 $stmtExamPorHist->execute([':hid' => (int)$c['id']]);
-                $c['examenes'] = $stmtExamPorHist->fetchAll(PDO::FETCH_ASSOC);
+                $exsRaw = $stmtExamPorHist->fetchAll(PDO::FETCH_ASSOC);
+                $c['examenes'] = array_map([self::class, 'enriquecerFilaExamen'], $exsRaw);
 
                 $pdfUrl = '';
                 if (!empty($c['url_informe_pdf'])) {
@@ -293,7 +332,7 @@ class ArchivoController {
             }
             unset($c);
 
-            // 2. Exámenes y estudios sin historia/consulta asociada (historia_id IS NULL OR historia_id = 0)
+            // 2. Exámenes y estudios sin historia/consulta asociada
             $condEx = ["(e.historia_id IS NULL OR e.historia_id = 0)"];
             $paramsEx = [];
 
@@ -324,7 +363,7 @@ class ArchivoController {
 
             $stmtEx = $pdo->prepare($sqlEx);
             $stmtEx->execute($paramsEx);
-            $examenesIndependientes = $stmtEx->fetchAll(PDO::FETCH_ASSOC);
+            $examenesIndependientes = array_map([self::class, 'enriquecerFilaExamen'], $stmtEx->fetchAll(PDO::FETCH_ASSOC));
 
             echo json_encode([
                 "status"                  => "success",
@@ -344,7 +383,6 @@ class ArchivoController {
 
     /**
      * POST /api/archivo/examenes
-     * Soporta application/json (con o sin archivos_base64) y multipart/form-data.
      */
     public static function crearExamen($input = []) {
         try {
@@ -359,11 +397,11 @@ class ArchivoController {
             $tipoExamen       = trim((string)($datos['tipo_examen'] ?? $datos['tipo'] ?? ''));
             $responsableCarga = self::normalizarResponsableCarga($datos['responsable_carga'] ?? 'medico');
             $descripcion      = trim((string)($datos['descripcion_solicitud'] ?? $datos['descripcion'] ?? ''));
-            $observacion      = trim((string)($datos['observaciones'] ?? ''));
-            $observacionDr    = trim((string)($datos['observaciones_dr'] ?? ''));
-            $resultado        = trim((string)($datos['resultado'] ?? ''));
-            $estado           = trim((string)($datos['estado_examen'] ?? $datos['estatus'] ?? 'Pendiente'));
-            $fechaExamen      = trim((string)($datos['fecha_examen'] ?? date('Y-m-d')));
+
+            $obsMedico = trim((string)($datos['observaciones_medico'] ?? $datos['observaciones_dr'] ?? $datos['observaciones'] ?? ''));
+            $resultado = trim((string)($datos['resultado'] ?? ''));
+            $estado    = trim((string)($datos['estado_examen'] ?? $datos['estatus'] ?? 'Pendiente'));
+            $fechaExamen = trim((string)($datos['fecha_examen'] ?? date('Y-m-d')));
 
             if ($tipoExamen === '') {
                 http_response_code(400);
@@ -405,33 +443,36 @@ class ArchivoController {
                 return;
             }
 
-            // Procesar uno o varios archivos adjuntos
-            $rutasSubidas = self::guardarArchivosAdjuntos($historiaId, $pacienteId, $datos);
-            $archivoUrl = !empty($datos['archivo_adjunto_url']) ? trim((string)$datos['archivo_adjunto_url']) : null;
+            // Procesar uno o varios archivos adjuntos (si el responsable es médico)
+            $rutasSubidas = ($responsableCarga === 'paciente')
+                ? []
+                : self::guardarArchivosAdjuntos($historiaId, $pacienteId, $datos);
 
+            $archivoUrl = !empty($datos['archivo_adjunto_url']) ? trim((string)$datos['archivo_adjunto_url']) : null;
             if (!empty($rutasSubidas)) {
                 $archivoUrl = self::codificarRutas($rutasSubidas);
             }
 
             $sql = "INSERT INTO gm_historias_examenes 
-                    (historia_id, paciente_id, medico_id, tipo_examen, responsable_carga, descripcion_solicitud, observaciones, observaciones_dr, resultado, estado_examen, archivo_adjunto_url, fecha_examen)
+                    (historia_id, paciente_id, medico_id, tipo_examen, responsable_carga, descripcion_solicitud, observaciones, observaciones_dr, observaciones_medico, resultado, estado_examen, archivo_adjunto_url, fecha_examen)
                     VALUES 
-                    (:hid, :pac, :med, :tipo, :resp, :desc, :obs, :obs_dr, :res, :estado, :url, :fecha)";
+                    (:hid, :pac, :med, :tipo, :resp, :desc, :obs, :obs_dr, :obs_med, :res, :estado, :url, :fecha)";
 
             $stmt = $pdo->prepare($sql);
             $stmt->execute([
-                ':hid'    => $historiaId > 0 ? $historiaId : null,
-                ':pac'    => $pacienteId,
-                ':med'    => $medicoId,
-                ':tipo'   => $tipoExamen,
-                ':resp'   => $responsableCarga,
-                ':desc'   => $descripcion !== '' ? $descripcion : null,
-                ':obs'    => $observacion !== '' ? $observacion : null,
-                ':obs_dr' => $observacionDr !== '' ? $observacionDr : null,
-                ':res'    => $resultado !== '' ? $resultado : ($observacion !== '' ? $observacion : null),
-                ':estado' => $estado !== '' ? $estado : 'Pendiente',
-                ':url'    => $archivoUrl,
-                ':fecha'  => preg_match('/^\d{4}-\d{2}-\d{2}$/', $fechaExamen) ? $fechaExamen : date('Y-m-d'),
+                ':hid'     => $historiaId > 0 ? $historiaId : null,
+                ':pac'     => $pacienteId,
+                ':med'     => $medicoId,
+                ':tipo'    => $tipoExamen,
+                ':resp'    => $responsableCarga,
+                ':desc'    => $descripcion !== '' ? $descripcion : null,
+                ':obs'     => $obsMedico !== '' ? $obsMedico : null,
+                ':obs_dr'  => $obsMedico !== '' ? $obsMedico : null,
+                ':obs_med' => $obsMedico !== '' ? $obsMedico : null,
+                ':res'     => $resultado !== '' ? $resultado : ($obsMedico !== '' ? $obsMedico : null),
+                ':estado'  => $estado !== '' ? $estado : 'Pendiente',
+                ':url'     => $archivoUrl,
+                ':fecha'   => preg_match('/^\d{4}-\d{2}-\d{2}$/', $fechaExamen) ? $fechaExamen : date('Y-m-d'),
             ]);
 
             $nuevoId = (int)$pdo->lastInsertId();
@@ -441,7 +482,7 @@ class ArchivoController {
                 "status"              => "success",
                 "mensaje"             => $historiaId > 0
                     ? "Examen asociado a la consulta #$historiaId registrado correctamente."
-                    : "Estudio independiente registrado correctamente en el archivo.",
+                    : "Estudio registrado correctamente en el archivo.",
                 "examen_id"           => $nuevoId,
                 "historia_id"         => $historiaId > 0 ? $historiaId : null,
                 "responsable_carga"   => $responsableCarga,
@@ -456,16 +497,16 @@ class ArchivoController {
     }
 
     /**
-     * PUT /api/archivo/examenes  y  POST /api/archivo/examenes/actualizar
-     * Permite editar todos los datos del examen, conservar/eliminar archivos previos y adjuntar nuevos.
+     * PUT /api/archivo/examenes/{id}  |  POST /api/archivo/examenes/{id}  |  PUT /api/archivo/examenes
      */
-    public static function actualizarExamen($input = []) {
+    public static function actualizarExamen($input = [], int $idRuta = 0) {
         try {
             $datos = self::obtenerDatosRequest($input);
-            $examenId = (int)($datos['id'] ?? $datos['examen_id'] ?? 0);
+            $examenId = $idRuta > 0 ? $idRuta : (int)($datos['id'] ?? $datos['examen_id'] ?? 0);
+
             if ($examenId <= 0) {
                 http_response_code(400);
-                echo json_encode(["status" => "error", "mensaje" => "Debe indicar el 'id' del examen."], JSON_UNESCAPED_UNICODE);
+                echo json_encode(["status" => "error", "mensaje" => "Debe indicar el ID del examen a actualizar."], JSON_UNESCAPED_UNICODE);
                 return;
             }
 
@@ -512,15 +553,15 @@ class ArchivoController {
                 $campos[] = "resultado = :res";
                 $params[':res'] = $resVal !== '' ? $resVal : null;
             }
-            if (isset($datos['observaciones'])) {
-                $obsVal = trim((string)$datos['observaciones']);
+            if (isset($datos['observaciones_medico']) || isset($datos['observaciones_dr']) || isset($datos['observaciones'])) {
+                $obsVal = trim((string)($datos['observaciones_medico'] ?? $datos['observaciones_dr'] ?? $datos['observaciones'] ?? ''));
+                $obsLimpia = $obsVal !== '' ? $obsVal : null;
                 $campos[] = "observaciones = :obs";
-                $params[':obs'] = $obsVal !== '' ? $obsVal : null;
-            }
-            if (isset($datos['observaciones_dr'])) {
-                $obsDrVal = trim((string)$datos['observaciones_dr']);
                 $campos[] = "observaciones_dr = :obs_dr";
-                $params[':obs_dr'] = $obsDrVal !== '' ? $obsDrVal : null;
+                $campos[] = "observaciones_medico = :obs_med";
+                $params[':obs']     = $obsLimpia;
+                $params[':obs_dr']  = $obsLimpia;
+                $params[':obs_med'] = $obsLimpia;
             }
             if (!empty($datos['fecha_examen']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', trim((string)$datos['fecha_examen']))) {
                 $campos[] = "fecha_examen = :fecha";
@@ -537,7 +578,9 @@ class ArchivoController {
                 || array_key_exists('archivo_adjunto_url', $datos);
 
             if ($seGestionanArchivos) {
+                $rutasPreviasBD = self::decodificarRutasExistentes($examenActual['archivo_adjunto_url'] ?? '');
                 $rutasConservadas = [];
+
                 if (array_key_exists('archivos_existentes', $datos)) {
                     $rawExist = $datos['archivos_existentes'];
                     if (is_string($rawExist)) {
@@ -546,7 +589,6 @@ class ArchivoController {
                     } elseif (is_array($rawExist)) {
                         $rutasConservadas = $rawExist;
                     }
-                    // Normalizar URLs completas a rutas relativas /uploads/examenes/... si aplica
                     $rutasConservadas = array_map(function ($u) {
                         $str = trim((string)$u);
                         if (preg_match('#(/uploads/examenes/[^?\s]+)#', $str, $m)) {
@@ -554,8 +596,14 @@ class ArchivoController {
                         }
                         return $str;
                     }, $rutasConservadas);
+
+                    // Eliminar del disco los archivos previos que el médico quitó al editar
+                    $rutasEliminadas = array_diff($rutasPreviasBD, $rutasConservadas);
+                    if (!empty($rutasEliminadas)) {
+                        self::eliminarArchivosFisicos($rutasEliminadas);
+                    }
                 } else {
-                    $rutasConservadas = self::decodificarRutasExistentes($examenActual['archivo_adjunto_url'] ?? '');
+                    $rutasConservadas = $rutasPreviasBD;
                 }
 
                 $todasLasRutas = array_merge($rutasConservadas, $rutasNuevas);
@@ -589,8 +637,56 @@ class ArchivoController {
     }
 
     /**
+     * DELETE /api/archivo/examenes/{id}  |  DELETE /api/archivo/examenes?id=X
+     */
+    public static function eliminarExamen(int $idRuta = 0) {
+        try {
+            $datos = self::obtenerDatosRequest([]);
+            $examenId = $idRuta > 0
+                ? $idRuta
+                : (int)($_GET['id'] ?? $_GET['examen_id'] ?? $datos['id'] ?? $datos['examen_id'] ?? 0);
+
+            if ($examenId <= 0) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "Debe indicar el ID del examen a eliminar."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo = Database::conectar();
+            self::asegurarEsquema($pdo);
+
+            $stmtCheck = $pdo->prepare("SELECT id, archivo_adjunto_url FROM gm_historias_examenes WHERE id = :id LIMIT 1");
+            $stmtCheck->execute([':id' => $examenId]);
+            $examen = $stmtCheck->fetch(PDO::FETCH_ASSOC);
+
+            if (!$examen) {
+                http_response_code(404);
+                echo json_encode(["status" => "error", "mensaje" => "El examen #$examenId no existe o ya fue eliminado."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            // Borrar archivos físicos asociados
+            $rutas = self::decodificarRutasExistentes($examen['archivo_adjunto_url'] ?? '');
+            if (!empty($rutas)) {
+                self::eliminarArchivosFisicos($rutas);
+            }
+
+            $pdo->prepare("DELETE FROM gm_historias_examenes WHERE id = :id")
+                ->execute([':id' => $examenId]);
+
+            echo json_encode([
+                "status"  => "success",
+                "mensaje" => "Examen eliminado correctamente."
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
      * PUT /api/historias  y  PUT /api/archivo/historias
-     * Permite al médico editar una consulta / historia médica existente sin duplicar registros.
      */
     public static function actualizarHistoria($input = []) {
         try {
@@ -663,7 +759,6 @@ class ArchivoController {
             $pdo->prepare("UPDATE gm_historias_medicas SET " . implode(", ", $sets) . " WHERE id = :id")
                 ->execute($params);
 
-            // Actualizar antropometría del paciente si se envió peso o estatura
             $pacId = (int)$histActual['paciente_id'];
             if ($pacId > 0 && (isset($datos['peso_actual']) || isset($datos['peso']) || isset($datos['estatura_actual']) || isset($datos['estatura']))) {
                 $peso = (float)($datos['peso_actual'] ?? $datos['peso'] ?? 0);
@@ -686,7 +781,6 @@ class ArchivoController {
                 }
             }
 
-            // Regenerar el PDF del informe si existe el generador
             if (class_exists(InformeMedicoPdfGenerator::class) && method_exists(InformeMedicoPdfGenerator::class, 'generar')) {
                 try {
                     $nuevoPdf = InformeMedicoPdfGenerator::generar($pdo, $historiaId);
