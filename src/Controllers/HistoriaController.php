@@ -304,7 +304,6 @@ class HistoriaController {
                     $archivoUrl = $ex['archivo_adjunto_url'] ?? null;
                     $uploadDir = __DIR__ . '/../../public/uploads/examenes/';
 
-                    // Soporte formato multipart plano: examenes_archivo_0, examenes_archivo_1...
                     $flatKey = 'examenes_archivo_' . $idx;
                     if (isset($_FILES[$flatKey]) && $_FILES[$flatKey]['error'] === UPLOAD_ERR_OK) {
                         if (!is_dir($uploadDir)) {
@@ -399,10 +398,12 @@ class HistoriaController {
             }
 
             $pdfUrlFinal = !empty($generado['url']) ? $generado['url'] : ("/api/historias/pdf?id=" . $historiaId);
-            $pdo->prepare("UPDATE gm_historias_medicas SET url_informe_pdf = :url, pdf_path = :url WHERE id = :id")
-                ->execute([':url' => $pdfUrlFinal, ':id' => $historiaId]);
+            $pdo->prepare("UPDATE gm_historias_medicas SET url_informe_pdf = :url1, pdf_path = :url2 WHERE id = :id")
+                ->execute([':url1' => $pdfUrlFinal, ':url2' => $pdfUrlFinal, ':id' => $historiaId]);
 
-            $pdo->commit();
+            if ($pdo->inTransaction()) {
+                $pdo->commit();
+            }
 
             http_response_code(201);
             echo json_encode([
