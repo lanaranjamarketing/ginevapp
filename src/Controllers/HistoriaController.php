@@ -57,7 +57,6 @@ class HistoriaController {
 
     /**
      * GET /api/historias?paciente_id=X&medico_id=Y
-     * Lista las historias médicas junto con sus exámenes complementarios asociados
      */
     public static function listar() {
         try {
@@ -125,7 +124,6 @@ class HistoriaController {
 
     /**
      * GET /api/historias/antecedentes?paciente_id=X
-     * Precarga los últimos antecedentes médicos y gineco-obstétricos del paciente
      */
     public static function obtenerUltimosAntecedentes() {
         try {
@@ -160,8 +158,6 @@ class HistoriaController {
 
     /**
      * POST /api/historias
-     * Guarda la historia clínica completa, exámenes relacionales, finanza BCV,
-     * cierra la cita, detiene el cronómetro de atención y genera el informe PDF
      */
     public static function crear($input) {
         $pdo = null;
@@ -284,7 +280,7 @@ class HistoriaController {
             $pdo->prepare("UPDATE gm_historias_medicas SET hash_validacion = :hash WHERE id = :id")
                 ->execute([':hash' => $hashValidacion, ':id' => $historiaId]);
 
-            // 3. Registrar Exámenes Complementarios (gm_historias_examenes)
+            // 3. Registrar Exámenes Complementarios
             $examenes = $input['examenes'] ?? [];
             if (is_string($examenes)) {
                 $examenes = json_decode($examenes, true) ?? [];
@@ -369,25 +365,49 @@ class HistoriaController {
                 ]);
             }
 
-            // 5. Marcar la cita asociada como 'completada' y DETENER EL CRONÓMETRO en gm_tiempo_atencion
+            // 5. Marcar la cita asociada como 'completada' y REGISTRAR/DETENER EL TIEMPO en gm_tiempo_atencion
             if ($citaId) {
                 $pdo->prepare("UPDATE gm_citas SET estado_cita = 'completada' WHERE id = :cid")
                     ->execute([':cid' => $citaId]);
-
-                if (class_exists(CitaController::class) && method_exists(CitaController::class, 'finalizarTiempoAtencion')) {
-                    CitaController::finalizarTiempoAtencion($pdo, (int)$citaId);
-                } else {
-                    $stmtT = $pdo->prepare("SELECT id FROM gm_tiempo_atencion WHERE cita_id = :cid AND estado = 'en_proceso' ORDER BY id DESC LIMIT 1");
-                    $stmtT->execute([':cid' => $citaId]);
-                    $tid = (int)$stmtT->fetchColumn();
-                    if ($tid > 0) {
-                        $pdo->prepare("UPDATE gm_tiempo_atencion SET fin = NOW(), tiempo = GREATEST(1, TIMESTAMPDIFF(SECOND, inicio, NOW())), estado = 'completado' WHERE id = :id")
-                            ->execute([':id' => $tid]);
-                    }
-                }
             }
 
-            // 6. Generar archivo oficial del Informe Médico con tema/colores dinámicos del médico
+            $cidTiempo = (int)($citaId ?? 0);
+            $tid = 0;
+            if ($cidTiempo > 0) {
+                $stmtT = $pdo->prepare("SELECT id FROM gm_tiempo_atencion WHERE cita_id = :cid AND estado = 'en_proceso' ORDER BY id DESC LIMIT 1");
+                $stmtT->execute([':cid' => $cidTiempo]);
+                $tid = (int)$stmtT->fetchColumn();
+            }
+
+            if ($tid > 0) {
+                // Si se inició el cronómetro al abrir la consulta, cerrarlo y calcular segundos transcurridos
+                $pdo->prepare("
+                    UPDATE gm_tiempo_atencion 
+                    SET fin = NOW(),
+                        tiempo = GREATEST(1, TIMESTAMPDIFF(SECOND, inicio, NOW())),
+                        estado = 'completado'
+                    WHERE id = :id
+                ")->execute([':id' => $tid]);
+            } else {
+                // Respaldo: si no se había llamado a iniciar-atencion antes, crear el registro completado
+                $duracionSeg = isset($input['tiempo_segundos']) && (int)$input['tiempo_segundos'] > 0
+                    ? (int)$input['tiempo_segundos']
+                    : 60;
+                $inicioCalc = date('Y-m-d H:i:s', time() - $duracionSeg);
+
+                $pdo->prepare("
+                    INSERT INTO gm_tiempo_atencion (cita_id, medico_id, paciente_id, dia, tiempo, estado, inicio, fin)
+                    VALUES (:cid, :med, :pac, CURDATE(), :tiempo, 'completado', :inicio, NOW())
+                ")->execute([
+                    ':cid'    => $cidTiempo,
+                    ':med'    => $medicoId,
+                    ':pac'    => $pacienteId,
+                    ':tiempo' => $duracionSeg,
+                    ':inicio' => $inicioCalc
+                ]);
+            }
+
+            // 6. Generar archivo oficial del Informe Médico
             $temaOverride = [
                 'color_primario'   => $input['color_primario'] ?? null,
                 'color_secundario' => $input['color_secundario'] ?? null,
@@ -426,7 +446,6 @@ class HistoriaController {
 
     /**
      * GET /api/historias/pdf?id=X
-     * Genera/muestra la plantilla oficial corporativa dinámica desde InformeMedicoPdfGenerator
      */
     public static function imprimirPdf() {
         try {
