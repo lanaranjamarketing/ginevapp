@@ -11,7 +11,7 @@ class ArchivoController {
 
     /**
      * Garantiza de forma segura que gm_historias_examenes soporte exámenes
-     * asociados a historias y exámenes independientes sin consulta asociada.
+     * asociados a historias, múltiples archivos adjuntos y estudios independientes.
      */
     private static function asegurarEsquema(PDO $pdo): void {
         if (self::$esquemaVerificado) {
@@ -19,6 +19,7 @@ class ArchivoController {
         }
         try {
             $pdo->exec("ALTER TABLE `gm_historias_examenes` MODIFY COLUMN `historia_id` mediumint(9) DEFAULT NULL");
+            $pdo->exec("ALTER TABLE `gm_historias_examenes` MODIFY COLUMN `archivo_adjunto_url` text DEFAULT NULL");
 
             $columnas = [
                 'paciente_id'   => "ALTER TABLE `gm_historias_examenes` ADD COLUMN `paciente_id` bigint(20) DEFAULT NULL AFTER `historia_id`",
@@ -40,10 +41,97 @@ class ArchivoController {
     }
 
     /**
+     * Unifica los parámetros recibidos tanto por JSON (php://input) como por multipart/form-data ($_POST).
+     */
+    private static function obtenerDatosRequest($input): array {
+        $datos = is_array($input) ? $input : [];
+        if (!empty($_POST)) {
+            $datos = array_merge($datos, $_POST);
+        }
+        if (empty($datos)) {
+            $raw = file_get_contents('php://input');
+            if ($raw) {
+                $decoded = json_decode($raw, true);
+                if (is_array($decoded)) {
+                    $datos = $decoded;
+                }
+            }
+        }
+        return $datos;
+    }
+
+    /**
+     * Procesa uno o múltiples archivos subidos en $_FILES ('archivos[]', 'archivo' o 'file')
+     * y los guarda en /public/uploads/examenes/ (hasta 250 MB).
+     */
+    private static function guardarArchivosAdjuntos(int $historiaId, int $pacienteId): array {
+        @ini_set('upload_max_filesize', '250M');
+        @ini_set('post_max_size', '255M');
+        @ini_set('max_execution_time', '300');
+        @ini_set('max_input_time', '300');
+
+        if (empty($_FILES)) {
+            return [];
+        }
+
+        $uploadDir = __DIR__ . '/../../public/uploads/examenes/';
+        if (!is_dir($uploadDir)) {
+            @mkdir($uploadDir, 0775, true);
+        }
+
+        $archivosParaProcesar = [];
+
+        // 1. Priorizar arreglo múltiple 'archivos[]'
+        if (isset($_FILES['archivos']) && is_array($_FILES['archivos']['name'])) {
+            $total = count($_FILES['archivos']['name']);
+            for ($i = 0; $i < $total; $i++) {
+                $archivosParaProcesar[] = [
+                    'name'     => $_FILES['archivos']['name'][$i] ?? '',
+                    'tmp_name' => $_FILES['archivos']['tmp_name'][$i] ?? '',
+                    'error'    => $_FILES['archivos']['error'][$i] ?? UPLOAD_ERR_NO_FILE,
+                    'size'     => (int)($_FILES['archivos']['size'][$i] ?? 0),
+                ];
+            }
+        } else {
+            // 2. Respaldo para archivo único ('archivo' o 'file')
+            $fileKey = isset($_FILES['archivo']) ? 'archivo' : (isset($_FILES['file']) ? 'file' : null);
+            if ($fileKey && isset($_FILES[$fileKey]['name'])) {
+                $archivosParaProcesar[] = [
+                    'name'     => $_FILES[$fileKey]['name'],
+                    'tmp_name' => $_FILES[$fileKey]['tmp_name'],
+                    'error'    => $_FILES[$fileKey]['error'],
+                    'size'     => (int)($_FILES[$fileKey]['size'] ?? 0),
+                ];
+            }
+        }
+
+        $maxBytes = 250 * 1024 * 1024; // 250 MB
+        $prefijo  = $historiaId > 0 ? ('exam_h' . $historiaId) : ('exam_ind_p' . $pacienteId);
+        $rutasGuardadas = [];
+
+        foreach ($archivosParaProcesar as $idx => $item) {
+            if (($item['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+                continue;
+            }
+            if (($item['size'] ?? 0) > $maxBytes || empty($item['tmp_name'])) {
+                continue;
+            }
+
+            $ext = strtolower(pathinfo((string)$item['name'], PATHINFO_EXTENSION) ?: 'pdf');
+            $extLimpia = preg_replace('/[^a-z0-9]/', '', $ext) ?: 'pdf';
+            $fileName = $prefijo . '_' . time() . '_' . $idx . '_' . mt_rand(100, 999) . '.' . $extLimpia;
+            $destino  = $uploadDir . $fileName;
+
+            if (move_uploaded_file($item['tmp_name'], $destino)) {
+                $rutasGuardadas[] = '/uploads/examenes/' . $fileName;
+            }
+        }
+
+        return $rutasGuardadas;
+    }
+
+    /**
      * GET /api/archivo?medico_id=X&paciente_id=Y
-     * Devuelve:
-     * 1) Consultas en estatus 'Completada' con sus exámenes asociados y enlace PDF
-     * 2) Exámenes/estudios independientes sin historia clínica asociada
      */
     public static function listar() {
         try {
@@ -171,23 +259,24 @@ class ArchivoController {
 
     /**
      * POST /api/archivo/examenes
-     * Registra un examen asociado a una consulta existente (historia_id > 0)
-     * o un estudio independiente sin historia asociada (historia_id = 0 / null).
+     * Soporta application/json y multipart/form-data con múltiples archivos (hasta 250 MB).
      */
-    public static function crearExamen($input) {
+    public static function crearExamen($input = []) {
         try {
             $pdo = Database::conectar();
             self::asegurarEsquema($pdo);
 
-            $medicoId    = (int)($input['medico_id'] ?? 0);
-            $pacienteId  = (int)($input['paciente_id'] ?? 0);
-            $historiaId  = !empty($input['historia_id']) ? (int)$input['historia_id'] : 0;
-            $tipoExamen  = trim((string)($input['tipo_examen'] ?? $input['tipo'] ?? ''));
-            $descripcion = trim((string)($input['descripcion_solicitud'] ?? $input['descripcion'] ?? ''));
-            $observacion = trim((string)($input['observaciones'] ?? ''));
-            $resultado   = trim((string)($input['resultado'] ?? ''));
-            $estado      = trim((string)($input['estado_examen'] ?? $input['estatus'] ?? 'Pendiente'));
-            $fechaExamen = trim((string)($input['fecha_examen'] ?? date('Y-m-d')));
+            $datos = self::obtenerDatosRequest($input);
+
+            $medicoId    = (int)($datos['medico_id'] ?? 0);
+            $pacienteId  = (int)($datos['paciente_id'] ?? 0);
+            $historiaId  = !empty($datos['historia_id']) ? (int)$datos['historia_id'] : 0;
+            $tipoExamen  = trim((string)($datos['tipo_examen'] ?? $datos['tipo'] ?? ''));
+            $descripcion = trim((string)($datos['descripcion_solicitud'] ?? $datos['descripcion'] ?? ''));
+            $observacion = trim((string)($datos['observaciones'] ?? ''));
+            $resultado   = trim((string)($datos['resultado'] ?? ''));
+            $estado      = trim((string)($datos['estado_examen'] ?? $datos['estatus'] ?? 'Pendiente'));
+            $fechaExamen = trim((string)($datos['fecha_examen'] ?? date('Y-m-d')));
 
             if ($tipoExamen === '') {
                 http_response_code(400);
@@ -198,7 +287,6 @@ class ArchivoController {
                 return;
             }
 
-            // Si viene historia_id, validar existencia y heredar paciente_id / medico_id si faltan
             if ($historiaId > 0) {
                 $stmtH = $pdo->prepare("SELECT id, paciente_id, medico_id FROM gm_historias_medicas WHERE id = :hid LIMIT 1");
                 $stmtH->execute([':hid' => $historiaId]);
@@ -230,22 +318,14 @@ class ArchivoController {
                 return;
             }
 
-            // Procesar archivo adjunto opcional (multipart/form-data)
-            $archivoUrl = !empty($input['archivo_adjunto_url']) ? trim((string)$input['archivo_adjunto_url']) : null;
-            $fileKey = isset($_FILES['archivo']) ? 'archivo' : (isset($_FILES['file']) ? 'file' : null);
+            // Procesar uno o varios archivos adjuntos (PDF, imágenes, documentos)
+            $rutasSubidas = self::guardarArchivosAdjuntos($historiaId, $pacienteId);
+            $archivoUrl = !empty($datos['archivo_adjunto_url']) ? trim((string)$datos['archivo_adjunto_url']) : null;
 
-            if ($fileKey && isset($_FILES[$fileKey]['error']) && $_FILES[$fileKey]['error'] === UPLOAD_ERR_OK) {
-                $uploadDir = __DIR__ . '/../../public/uploads/examenes/';
-                if (!is_dir($uploadDir)) {
-                    mkdir($uploadDir, 0755, true);
-                }
-                $ext = pathinfo($_FILES[$fileKey]['name'], PATHINFO_EXTENSION) ?: 'pdf';
-                $prefijo = $historiaId > 0 ? ('exam_h' . $historiaId) : ('exam_ind_p' . $pacienteId);
-                $fileName = $prefijo . '_' . time() . '_' . mt_rand(100, 999) . '.' . strtolower($ext);
-
-                if (move_uploaded_file($_FILES[$fileKey]['tmp_name'], $uploadDir . $fileName)) {
-                    $archivoUrl = '/uploads/examenes/' . $fileName;
-                }
+            if (count($rutasSubidas) === 1) {
+                $archivoUrl = $rutasSubidas[0];
+            } elseif (count($rutasSubidas) > 1) {
+                $archivoUrl = json_encode($rutasSubidas, JSON_UNESCAPED_SLASHES);
             }
 
             $sql = "INSERT INTO gm_historias_examenes 
@@ -277,7 +357,8 @@ class ArchivoController {
                     : "Estudio independiente registrado correctamente en el archivo.",
                 "examen_id"           => $nuevoId,
                 "historia_id"         => $historiaId > 0 ? $historiaId : null,
-                "archivo_adjunto_url" => $archivoUrl
+                "archivo_adjunto_url" => $archivoUrl,
+                "archivos"            => $rutasSubidas
             ], JSON_UNESCAPED_UNICODE);
 
         } catch (Exception $e) {
@@ -288,11 +369,11 @@ class ArchivoController {
 
     /**
      * PUT /api/archivo/examenes
-     * Actualiza estatus, resultado o adjunto de cualquier examen (asociado o independiente).
      */
-    public static function actualizarExamen($input) {
+    public static function actualizarExamen($input = []) {
         try {
-            $examenId = (int)($input['id'] ?? $input['examen_id'] ?? 0);
+            $datos = self::obtenerDatosRequest($input);
+            $examenId = (int)($datos['id'] ?? $datos['examen_id'] ?? 0);
             if ($examenId <= 0) {
                 http_response_code(400);
                 echo json_encode(["status" => "error", "mensaje" => "Debe indicar el 'id' del examen."], JSON_UNESCAPED_UNICODE);
@@ -305,21 +386,21 @@ class ArchivoController {
             $campos = [];
             $params = [':id' => $examenId];
 
-            if (!empty($input['estado_examen'])) {
+            if (!empty($datos['estado_examen'])) {
                 $campos[] = "estado_examen = :estado";
-                $params[':estado'] = trim((string)$input['estado_examen']);
+                $params[':estado'] = trim((string)$datos['estado_examen']);
             }
-            if (isset($input['resultado'])) {
+            if (isset($datos['resultado'])) {
                 $campos[] = "resultado = :res";
-                $params[':res'] = trim((string)$input['resultado']);
+                $params[':res'] = trim((string)$datos['resultado']);
             }
-            if (isset($input['observaciones'])) {
+            if (isset($datos['observaciones'])) {
                 $campos[] = "observaciones = :obs";
-                $params[':obs'] = trim((string)$input['observaciones']);
+                $params[':obs'] = trim((string)$datos['observaciones']);
             }
-            if (!empty($input['archivo_adjunto_url'])) {
+            if (!empty($datos['archivo_adjunto_url'])) {
                 $campos[] = "archivo_adjunto_url = :url";
-                $params[':url'] = trim((string)$input['archivo_adjunto_url']);
+                $params[':url'] = trim((string)$datos['archivo_adjunto_url']);
             }
 
             if (empty($campos)) {
