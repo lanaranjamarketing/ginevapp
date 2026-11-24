@@ -416,6 +416,209 @@ class FinanzaServicioController {
     }
 
     /**
+     * GET /api/finanzas/cuentas-por-cobrar?medico_id=X&paciente_id=Y
+     */
+    public static function listarCuentasPorCobrar() {
+        try {
+            $pdo = Database::conectar();
+            self::asegurarEsquemaFinanciamientoYCobros($pdo);
+
+            $condiciones = ["1=1"];
+            $params = [];
+
+            if (!empty($_GET['medico_id'])) {
+                $condiciones[] = "c.medico_id = :med";
+                $params[':med'] = (int)$_GET['medico_id'];
+            }
+            if (!empty($_GET['paciente_id'])) {
+                $condiciones[] = "c.paciente_id = :pac";
+                $params[':pac'] = (int)$_GET['paciente_id'];
+            }
+
+            $whereSql = implode(" AND ", $condiciones);
+
+            $sql = "SELECT
+                        c.*,
+                        CONCAT(p.nombre, ' ', p.apellido) AS cliente,
+                        p.cedula AS paciente_cedula
+                    FROM gm_cuentas_por_cobrar c
+                    LEFT JOIN gm_usuarios_extendidos p ON c.paciente_id = p.user_id
+                    WHERE $whereSql
+                    ORDER BY c.fecha DESC, c.id DESC";
+
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+            $cuentas = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            echo json_encode([
+                "status" => "success",
+                "total"  => count($cuentas),
+                "data"   => $cuentas
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
+     * POST /api/finanzas/cuentas-por-cobrar/abono
+     * Suma el abono al HABER (y haber_bs) y reduce el SALDO (y saldo_bs) en gm_cuentas_por_cobrar,
+     * además de registrar la entrada en el DEBE (y debe_bs) de gm_finanzas.
+     */
+    public static function registrarAbonoCuentaPorCobrar($input = null) {
+        try {
+            if ($input === null) {
+                $input = json_decode(file_get_contents('php://input'), true) ?: [];
+            }
+
+            $cuentaId   = (int)($input['cuenta_id'] ?? $input['id'] ?? 0);
+            $medicoId   = (int)($input['medico_id'] ?? 0);
+            $pacienteId = (int)($input['paciente_id'] ?? 0);
+            $concepto   = trim((string)($input['concepto'] ?? 'Abono a cuenta por cobrar'));
+
+            $pdo = Database::conectar();
+            self::asegurarEsquemaFinanciamientoYCobros($pdo);
+
+            $tasaVal = $pdo->query("SELECT tasa_usd FROM gm_tasa_bcv ORDER BY fecha DESC LIMIT 1")->fetchColumn();
+            $tasaBcv = !empty($input['tasa_bcv']) && (float)$input['tasa_bcv'] > 0
+                ? (float)$input['tasa_bcv']
+                : (($tasaVal && (float)$tasaVal > 0) ? (float)$tasaVal : 1.0000);
+
+            $montoUsd = (float)($input['monto_usd'] ?? $input['haber_usd'] ?? 0);
+            $montoBs  = (float)($input['monto_bs'] ?? $input['haber_bs'] ?? 0);
+
+            if ($montoUsd <= 0 && $montoBs > 0) {
+                $montoUsd = round($montoBs / $tasaBcv, 2);
+            } elseif ($montoBs <= 0 && $montoUsd > 0) {
+                $montoBs = round($montoUsd * $tasaBcv, 2);
+            } else {
+                $montoUsd = round($montoUsd, 2);
+                $montoBs  = round($montoBs, 2);
+            }
+
+            if ($montoUsd <= 0 || $montoBs <= 0) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "Debe indicar un monto válido para el abono."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo->beginTransaction();
+
+            $nuevoSaldoUsd = null;
+            $nuevoSaldoBs  = null;
+
+            if ($cuentaId > 0) {
+                $stmtCxc = $pdo->prepare("SELECT * FROM gm_cuentas_por_cobrar WHERE id = :id LIMIT 1 FOR UPDATE");
+                $stmtCxc->execute([':id' => $cuentaId]);
+                $cuenta = $stmtCxc->fetch(PDO::FETCH_ASSOC);
+
+                if (!$cuenta) {
+                    $pdo->rollBack();
+                    http_response_code(404);
+                    echo json_encode(["status" => "error", "mensaje" => "Cuenta por cobrar no encontrada."], JSON_UNESCAPED_UNICODE);
+                    return;
+                }
+
+                $medicoId   = $medicoId > 0 ? $medicoId : (int)$cuenta['medico_id'];
+                $pacienteId = $pacienteId > 0 ? $pacienteId : (int)$cuenta['paciente_id'];
+
+                $debeActualUsd  = (float)($cuenta['debe'] ?? 0);
+                $haberActualUsd = (float)($cuenta['haber'] ?? 0);
+                $saldoActualUsd = (float)($cuenta['saldo'] ?? max(0, $debeActualUsd - $haberActualUsd));
+
+                if ($montoUsd > ($saldoActualUsd + 0.01)) {
+                    $pdo->rollBack();
+                    http_response_code(400);
+                    echo json_encode(["status" => "error", "mensaje" => "El abono excede el saldo pendiente de la cuenta por cobrar."], JSON_UNESCAPED_UNICODE);
+                    return;
+                }
+
+                $nuevoHaberUsd = round($haberActualUsd + $montoUsd, 2);
+                $nuevoSaldoUsd = round(max(0, $debeActualUsd - $nuevoHaberUsd), 2);
+
+                $debeActualBs  = (float)($cuenta['debe_bs'] ?? round($debeActualUsd * $tasaBcv, 2));
+                $haberActualBs = (float)($cuenta['haber_bs'] ?? round($haberActualUsd * $tasaBcv, 2));
+                $nuevoHaberBs  = round($haberActualBs + $montoBs, 2);
+                $nuevoSaldoBs  = round(max(0, $debeActualBs - $nuevoHaberBs), 2);
+                $nuevoEstado   = ($nuevoSaldoUsd <= 0.009) ? 'pagado' : 'parcial';
+
+                $updCxc = $pdo->prepare("
+                    UPDATE gm_cuentas_por_cobrar
+                    SET haber = :haber,
+                        saldo = :saldo,
+                        haber_bs = :haber_bs,
+                        saldo_bs = :saldo_bs,
+                        estado = :estado
+                    WHERE id = :id
+                ");
+                $updCxc->execute([
+                    ':haber'    => $nuevoHaberUsd,
+                    ':saldo'    => $nuevoSaldoUsd,
+                    ':haber_bs' => $nuevoHaberBs,
+                    ':saldo_bs' => $nuevoSaldoBs,
+                    ':estado'   => $nuevoEstado,
+                    ':id'       => $cuentaId,
+                ]);
+            }
+
+            if ($medicoId <= 0) {
+                $pdo->rollBack();
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "El campo medico_id es obligatorio."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $fechaMov = !empty($input['fecha']) ? substr(trim((string)$input['fecha']), 0, 10) : date('Y-m-d');
+            $conceptoFinal = (stripos($concepto, 'abono') === false)
+                ? "Abono CxC: {$concepto}"
+                : $concepto;
+
+            // Registrar la entrada de dinero en el DEBE (y debe_bs) de gm_finanzas
+            $insFin = $pdo->prepare("
+                INSERT INTO gm_finanzas
+                (medico_id, paciente_id, historia_id, fecha, concepto, debe, haber, saldo, debe_bs, haber_bs, saldo_bs, tasa_bcv)
+                VALUES
+                (:med, :pac, NULL, :fecha, :concepto, :debe, 0.00, :saldo, :debe_bs, 0.00, :saldo_bs, :tasa)
+            ");
+            $insFin->execute([
+                ':med'      => $medicoId,
+                ':pac'      => $pacienteId,
+                ':fecha'    => $fechaMov,
+                ':concepto' => $conceptoFinal,
+                ':debe'     => $montoUsd,
+                ':saldo'    => $montoUsd,
+                ':debe_bs'  => $montoBs,
+                ':saldo_bs' => $montoBs,
+                ':tasa'     => $tasaBcv,
+            ]);
+
+            $finanzaId = (int)$pdo->lastInsertId();
+            $pdo->commit();
+
+            http_response_code(201);
+            echo json_encode([
+                "status"           => "success",
+                "mensaje"          => "Abono registrado: sumado al Haber de Cuentas por Cobrar y al Debe de Finanzas.",
+                "finanza_id"       => $finanzaId,
+                "cuenta_id"        => $cuentaId,
+                "monto_abonado_usd"=> $montoUsd,
+                "monto_abonado_bs" => $montoBs,
+                "nuevo_saldo_usd"  => $nuevoSaldoUsd,
+                "nuevo_saldo_bs"   => $nuevoSaldoBs
+            ], JSON_UNESCAPED_UNICODE);
+
+        } catch (Exception $e) {
+            if (isset($pdo) && $pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        }
+    }
+
+    /**
      * POST /api/finanzas
      */
     public static function registrarMovimiento($input = null) {
@@ -803,7 +1006,6 @@ class FinanzaServicioController {
             $debeUsd = round((float)($pres['total_usd'] ?? 0), 2);
             $debeBs  = round($debeUsd * $tasaBcv, 2);
 
-            // Insertar cargo en gm_finanzas reflejando debe, saldo, debe_bs y saldo_bs
             $insFin = $pdo->prepare("
                 INSERT INTO gm_finanzas
                 (medico_id, paciente_id, fecha, concepto, debe, haber, saldo, debe_bs, haber_bs, saldo_bs, tasa_bcv, facturado)
@@ -822,7 +1024,6 @@ class FinanzaServicioController {
             ]);
             $finanzaId = (int)$pdo->lastInsertId();
 
-            // Marcar presupuesto como APROBADO
             $updPres = $pdo->prepare("
                 UPDATE gm_presupuestos
                 SET estatus = 'aprobado', paciente_id = :pac, finanza_id = :fid

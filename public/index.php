@@ -144,6 +144,8 @@ if ($uri === '/' || $uri === '/api') {
             "GET /api/tasa-bcv/sincronizar",
             "GET /api/finanzas",
             "POST /api/finanzas",
+            "GET /api/finanzas/cuentas-por-cobrar",
+            "POST /api/finanzas/cuentas-por-cobrar/abono",
             "POST /api/finanzas/egreso",
             "POST /api/finanzas/eliminar-egresos",
             "POST /api/finanzas/facturar",
@@ -321,6 +323,12 @@ if ($uri === '/' || $uri === '/api') {
 
 } elseif ($uri === '/api/finanzas' && $method === 'POST') {
     FinanzaServicioController::registrarMovimiento($input);
+
+} elseif ($uri === '/api/finanzas/cuentas-por-cobrar' && $method === 'GET') {
+    FinanzaServicioController::listarCuentasPorCobrar();
+
+} elseif ($uri === '/api/finanzas/cuentas-por-cobrar/abono' && $method === 'POST') {
+    FinanzaServicioController::registrarAbonoCuentaPorCobrar($input);
 
 } elseif ($uri === '/api/finanzas/egreso' && $method === 'POST') {
     FinanzaServicioController::registrarEgreso($input);
