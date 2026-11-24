@@ -55,14 +55,20 @@ class FinanzaServicioController {
                 `paciente_id` bigint(20) NOT NULL,
                 `cita_id` mediumint(9) DEFAULT NULL,
                 `servicio_id` mediumint(9) DEFAULT NULL,
-                `fecha` date NOT NULL,
-                `descripcion` varchar(255) NOT NULL,
-                `fecha_vencimiento` date NOT NULL,
+                `fecha` date DEFAULT NULL,
+                `fecha_credito` date DEFAULT NULL,
+                `descripcion` varchar(500) NOT NULL DEFAULT '',
+                `fecha_vencimiento` date DEFAULT NULL,
                 `cantidad_cuotas` int(3) NOT NULL DEFAULT 1,
+                `cuotas_semanales` int(3) NOT NULL DEFAULT 1,
+                `monto_cuota_usd` decimal(12,2) NOT NULL DEFAULT 0.00,
                 `frecuencia_cuotas` varchar(20) NOT NULL DEFAULT 'semanal',
-                `debe` decimal(10,2) NOT NULL DEFAULT 0.00,
-                `haber` decimal(10,2) NOT NULL DEFAULT 0.00,
-                `saldo` decimal(10,2) NOT NULL DEFAULT 0.00,
+                `debe` decimal(12,2) NOT NULL DEFAULT 0.00,
+                `debe_usd` decimal(12,2) NOT NULL DEFAULT 0.00,
+                `haber` decimal(12,2) NOT NULL DEFAULT 0.00,
+                `haber_usd` decimal(12,2) NOT NULL DEFAULT 0.00,
+                `saldo` decimal(12,2) NOT NULL DEFAULT 0.00,
+                `saldo_usd` decimal(12,2) NOT NULL DEFAULT 0.00,
                 `debe_bs` decimal(12,2) NOT NULL DEFAULT 0.00,
                 `haber_bs` decimal(12,2) NOT NULL DEFAULT 0.00,
                 `saldo_bs` decimal(12,2) NOT NULL DEFAULT 0.00,
@@ -75,6 +81,40 @@ class FinanzaServicioController {
                 INDEX `idx_cxc_vencimiento` (`fecha_vencimiento`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         ");
+
+        $colsExtraCxc = [
+            'servicio_id'       => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `servicio_id` mediumint(9) DEFAULT NULL",
+            'fecha'             => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `fecha` date DEFAULT NULL",
+            'fecha_credito'     => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `fecha_credito` date DEFAULT NULL",
+            'cantidad_cuotas'   => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `cantidad_cuotas` int(3) NOT NULL DEFAULT 1",
+            'cuotas_semanales'  => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `cuotas_semanales` int(3) NOT NULL DEFAULT 1",
+            'monto_cuota_usd'   => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `monto_cuota_usd` decimal(12,2) NOT NULL DEFAULT 0.00",
+            'frecuencia_cuotas' => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `frecuencia_cuotas` varchar(20) NOT NULL DEFAULT 'semanal'",
+            'debe'              => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `debe` decimal(12,2) NOT NULL DEFAULT 0.00",
+            'debe_usd'          => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `debe_usd` decimal(12,2) NOT NULL DEFAULT 0.00",
+            'haber'             => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `haber` decimal(12,2) NOT NULL DEFAULT 0.00",
+            'haber_usd'         => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `haber_usd` decimal(12,2) NOT NULL DEFAULT 0.00",
+            'saldo'             => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `saldo` decimal(12,2) NOT NULL DEFAULT 0.00",
+            'saldo_usd'         => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `saldo_usd` decimal(12,2) NOT NULL DEFAULT 0.00",
+            'debe_bs'           => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `debe_bs` decimal(12,2) NOT NULL DEFAULT 0.00",
+            'haber_bs'          => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `haber_bs` decimal(12,2) NOT NULL DEFAULT 0.00",
+            'saldo_bs'          => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `saldo_bs` decimal(12,2) NOT NULL DEFAULT 0.00",
+            'tasa_bcv'          => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `tasa_bcv` decimal(10,4) NOT NULL DEFAULT 1.0000",
+        ];
+
+        foreach ($colsExtraCxc as $col => $alterSql) {
+            $chk = $pdo->prepare("
+                SELECT COUNT(*)
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'gm_cuentas_por_cobrar'
+                  AND COLUMN_NAME = :c
+            ");
+            $chk->execute([':c' => $col]);
+            if ((int)$chk->fetchColumn() === 0) {
+                $pdo->exec($alterSql);
+            }
+        }
     }
 
     /**
@@ -357,13 +397,13 @@ class FinanzaServicioController {
 
             $filtroTipo = trim((string)($_GET['filtro_tipo'] ?? ''));
             if ($filtroTipo === 'dia' && !empty($_GET['fecha_dia'])) {
-                $condiciones[] = "f.fecha = :fecha_dia";
+                $condiciones[] = "DATE(f.fecha) = :fecha_dia";
                 $params[':fecha_dia'] = trim((string)$_GET['fecha_dia']);
             } elseif ($filtroTipo === 'mes' && !empty($_GET['mes_sel'])) {
                 $condiciones[] = "DATE_FORMAT(f.fecha, '%Y-%m') = :mes_sel";
                 $params[':mes_sel'] = trim((string)$_GET['mes_sel']);
             } elseif ($filtroTipo === 'custom' && !empty($_GET['f_inicio']) && !empty($_GET['f_fin'])) {
-                $condiciones[] = "f.fecha BETWEEN :f_inicio AND :f_fin";
+                $condiciones[] = "DATE(f.fecha) BETWEEN :f_inicio AND :f_fin";
                 $params[':f_inicio'] = trim((string)$_GET['f_inicio']);
                 $params[':f_fin']    = trim((string)$_GET['f_fin']);
             }
@@ -373,9 +413,11 @@ class FinanzaServicioController {
             $sql = "SELECT 
                         f.*,
                         CONCAT(p.nombre, ' ', p.apellido) AS paciente_nombre,
-                        p.cedula AS paciente_cedula
+                        p.cedula AS paciente_cedula,
+                        CONCAT('Dr(a). ', m.nombre, ' ', m.apellido) AS medico_nombre
                     FROM gm_finanzas f
                     LEFT JOIN gm_usuarios_extendidos p ON f.paciente_id = p.user_id
+                    LEFT JOIN gm_usuarios_extendidos m ON f.medico_id = m.user_id
                     WHERE $whereSql
                     ORDER BY f.fecha DESC, f.id DESC";
 
@@ -439,12 +481,23 @@ class FinanzaServicioController {
 
             $sql = "SELECT
                         c.*,
+                        COALESCE(c.fecha, c.fecha_credito) AS fecha,
+                        COALESCE(NULLIF(c.cantidad_cuotas, 0), NULLIF(c.cuotas_semanales, 0), 1) AS cantidad_cuotas,
+                        COALESCE(NULLIF(c.cuotas_semanales, 0), NULLIF(c.cantidad_cuotas, 0), 1) AS cuotas_semanales,
+                        COALESCE(NULLIF(c.debe, 0), c.debe_usd, 0) AS debe,
+                        COALESCE(NULLIF(c.debe, 0), c.debe_usd, 0) AS monto_total_usd,
+                        COALESCE(NULLIF(c.haber, 0), c.haber_usd, 0) AS haber,
+                        COALESCE(NULLIF(c.haber, 0), c.haber_usd, 0) AS total_abonos_usd,
+                        COALESCE(NULLIF(c.saldo, 0), c.saldo_usd, 0) AS saldo,
+                        COALESCE(NULLIF(c.saldo, 0), c.saldo_usd, 0) AS saldo_pendiente_usd,
                         CONCAT(p.nombre, ' ', p.apellido) AS cliente,
-                        p.cedula AS paciente_cedula
+                        p.cedula AS paciente_cedula,
+                        CONCAT('Dr(a). ', m.nombre, ' ', m.apellido) AS medico_nombre
                     FROM gm_cuentas_por_cobrar c
                     LEFT JOIN gm_usuarios_extendidos p ON c.paciente_id = p.user_id
+                    LEFT JOIN gm_usuarios_extendidos m ON c.medico_id = m.user_id
                     WHERE $whereSql
-                    ORDER BY c.fecha DESC, c.id DESC";
+                    ORDER BY COALESCE(c.fecha, c.fecha_credito) DESC, c.id DESC";
 
             $stmt = $pdo->prepare($sql);
             $stmt->execute($params);
@@ -524,9 +577,9 @@ class FinanzaServicioController {
                 $medicoId   = $medicoId > 0 ? $medicoId : (int)$cuenta['medico_id'];
                 $pacienteId = $pacienteId > 0 ? $pacienteId : (int)$cuenta['paciente_id'];
 
-                $debeActualUsd  = (float)($cuenta['debe'] ?? 0);
-                $haberActualUsd = (float)($cuenta['haber'] ?? 0);
-                $saldoActualUsd = (float)($cuenta['saldo'] ?? max(0, $debeActualUsd - $haberActualUsd));
+                $debeActualUsd  = max((float)($cuenta['debe'] ?? 0), (float)($cuenta['debe_usd'] ?? 0));
+                $haberActualUsd = max((float)($cuenta['haber'] ?? 0), (float)($cuenta['haber_usd'] ?? 0));
+                $saldoActualUsd = max(0, $debeActualUsd - $haberActualUsd);
 
                 if ($montoUsd > ($saldoActualUsd + 0.01)) {
                     $pdo->rollBack();
@@ -538,24 +591,28 @@ class FinanzaServicioController {
                 $nuevoHaberUsd = round($haberActualUsd + $montoUsd, 2);
                 $nuevoSaldoUsd = round(max(0, $debeActualUsd - $nuevoHaberUsd), 2);
 
-                $debeActualBs  = (float)($cuenta['debe_bs'] ?? round($debeActualUsd * $tasaBcv, 2));
-                $haberActualBs = (float)($cuenta['haber_bs'] ?? round($haberActualUsd * $tasaBcv, 2));
+                $debeActualBs  = (float)($cuenta['debe_bs'] ?? 0) > 0 ? (float)$cuenta['debe_bs'] : round($debeActualUsd * $tasaBcv, 2);
+                $haberActualBs = (float)($cuenta['haber_bs'] ?? 0) > 0 ? (float)$cuenta['haber_bs'] : round($haberActualUsd * $tasaBcv, 2);
                 $nuevoHaberBs  = round($haberActualBs + $montoBs, 2);
                 $nuevoSaldoBs  = round(max(0, $debeActualBs - $nuevoHaberBs), 2);
                 $nuevoEstado   = ($nuevoSaldoUsd <= 0.009) ? 'pagado' : 'parcial';
 
                 $updCxc = $pdo->prepare("
                     UPDATE gm_cuentas_por_cobrar
-                    SET haber = :haber,
-                        saldo = :saldo,
+                    SET haber = :haber1,
+                        haber_usd = :haber2,
+                        saldo = :saldo1,
+                        saldo_usd = :saldo2,
                         haber_bs = :haber_bs,
                         saldo_bs = :saldo_bs,
                         estado = :estado
                     WHERE id = :id
                 ");
                 $updCxc->execute([
-                    ':haber'    => $nuevoHaberUsd,
-                    ':saldo'    => $nuevoSaldoUsd,
+                    ':haber1'   => $nuevoHaberUsd,
+                    ':haber2'   => $nuevoHaberUsd,
+                    ':saldo1'   => $nuevoSaldoUsd,
+                    ':saldo2'   => $nuevoSaldoUsd,
                     ':haber_bs' => $nuevoHaberBs,
                     ':saldo_bs' => $nuevoSaldoBs,
                     ':estado'   => $nuevoEstado,
@@ -575,7 +632,6 @@ class FinanzaServicioController {
                 ? "Abono CxC: {$concepto}"
                 : $concepto;
 
-            // Registrar la entrada de dinero en el DEBE (y debe_bs) de gm_finanzas
             $insFin = $pdo->prepare("
                 INSERT INTO gm_finanzas
                 (medico_id, paciente_id, historia_id, fecha, concepto, debe, haber, saldo, debe_bs, haber_bs, saldo_bs, tasa_bcv)
@@ -599,14 +655,14 @@ class FinanzaServicioController {
 
             http_response_code(201);
             echo json_encode([
-                "status"           => "success",
-                "mensaje"          => "Abono registrado: sumado al Haber de Cuentas por Cobrar y al Debe de Finanzas.",
-                "finanza_id"       => $finanzaId,
-                "cuenta_id"        => $cuentaId,
-                "monto_abonado_usd"=> $montoUsd,
-                "monto_abonado_bs" => $montoBs,
-                "nuevo_saldo_usd"  => $nuevoSaldoUsd,
-                "nuevo_saldo_bs"   => $nuevoSaldoBs
+                "status"            => "success",
+                "mensaje"           => "Abono registrado: sumado al Haber de Cuentas por Cobrar y al Debe de Finanzas.",
+                "finanza_id"        => $finanzaId,
+                "cuenta_id"         => $cuentaId,
+                "monto_abonado_usd" => $montoUsd,
+                "monto_abonado_bs"  => $montoBs,
+                "nuevo_saldo_usd"   => $nuevoSaldoUsd,
+                "nuevo_saldo_bs"    => $nuevoSaldoBs
             ], JSON_UNESCAPED_UNICODE);
 
         } catch (Exception $e) {

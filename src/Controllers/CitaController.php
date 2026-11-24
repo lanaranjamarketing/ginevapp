@@ -10,8 +10,6 @@ class CitaController {
     /**
      * Asegura que existan las columnas y tablas necesarias para cola, check-in QR,
      * control de tiempos, financiamiento, cuentas por cobrar y finanzas.
-     * Alineado con la estructura real de gm_tiempo_atencion:
-     * (id, cita_id, medico_id, paciente_id, dia, tiempo, estado, inicio, fin)
      */
     private static function asegurarEsquemaCola(PDO $pdo): void {
         try {
@@ -56,13 +54,18 @@ class CitaController {
                     medico_id INT NOT NULL,
                     paciente_id INT NOT NULL,
                     cita_id INT NULL,
-                    fecha_credito DATE NOT NULL,
-                    fecha_vencimiento DATE NOT NULL,
+                    fecha DATE NULL,
+                    fecha_credito DATE NULL,
+                    fecha_vencimiento DATE NULL,
                     descripcion VARCHAR(500) NOT NULL DEFAULT '',
+                    cantidad_cuotas INT NOT NULL DEFAULT 1,
                     cuotas_semanales INT NOT NULL DEFAULT 1,
                     monto_cuota_usd DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+                    debe DECIMAL(12,2) NOT NULL DEFAULT 0.00,
                     debe_usd DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+                    haber DECIMAL(12,2) NOT NULL DEFAULT 0.00,
                     haber_usd DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+                    saldo DECIMAL(12,2) NOT NULL DEFAULT 0.00,
                     saldo_usd DECIMAL(12,2) NOT NULL DEFAULT 0.00,
                     estado VARCHAR(30) NOT NULL DEFAULT 'pendiente',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -70,6 +73,27 @@ class CitaController {
                     INDEX idx_cxc_cita (cita_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             ");
+
+            // Asegurar compatibilidad de columnas si la tabla ya existía con otro esquema
+            $colsCxc = $pdo->query("SHOW COLUMNS FROM gm_cuentas_por_cobrar")->fetchAll(PDO::FETCH_COLUMN);
+            $alterCxc = [
+                'fecha'            => "ALTER TABLE gm_cuentas_por_cobrar ADD COLUMN fecha DATE NULL AFTER cita_id",
+                'fecha_credito'    => "ALTER TABLE gm_cuentas_por_cobrar ADD COLUMN fecha_credito DATE NULL AFTER fecha",
+                'cantidad_cuotas'  => "ALTER TABLE gm_cuentas_por_cobrar ADD COLUMN cantidad_cuotas INT NOT NULL DEFAULT 1",
+                'cuotas_semanales' => "ALTER TABLE gm_cuentas_por_cobrar ADD COLUMN cuotas_semanales INT NOT NULL DEFAULT 1",
+                'monto_cuota_usd'  => "ALTER TABLE gm_cuentas_por_cobrar ADD COLUMN monto_cuota_usd DECIMAL(12,2) NOT NULL DEFAULT 0.00",
+                'debe'             => "ALTER TABLE gm_cuentas_por_cobrar ADD COLUMN debe DECIMAL(12,2) NOT NULL DEFAULT 0.00",
+                'debe_usd'         => "ALTER TABLE gm_cuentas_por_cobrar ADD COLUMN debe_usd DECIMAL(12,2) NOT NULL DEFAULT 0.00",
+                'haber'            => "ALTER TABLE gm_cuentas_por_cobrar ADD COLUMN haber DECIMAL(12,2) NOT NULL DEFAULT 0.00",
+                'haber_usd'        => "ALTER TABLE gm_cuentas_por_cobrar ADD COLUMN haber_usd DECIMAL(12,2) NOT NULL DEFAULT 0.00",
+                'saldo'            => "ALTER TABLE gm_cuentas_por_cobrar ADD COLUMN saldo DECIMAL(12,2) NOT NULL DEFAULT 0.00",
+                'saldo_usd'        => "ALTER TABLE gm_cuentas_por_cobrar ADD COLUMN saldo_usd DECIMAL(12,2) NOT NULL DEFAULT 0.00",
+            ];
+            foreach ($alterCxc as $col => $sqlAlter) {
+                if (!in_array($col, $colsCxc, true)) {
+                    $pdo->exec($sqlAlter);
+                }
+            }
         } catch (Exception $e) {}
 
         try {
@@ -146,7 +170,7 @@ class CitaController {
      * a partir de los registros completados en gm_tiempo_atencion.
      */
     private static function obtenerPromedioAtencionMinutos(PDO $pdo, int $medicoId): float {
-        $promedioMin = 15.0; // Valor por defecto si aún no hay consultas completadas
+        $promedioMin = 15.0;
         if ($medicoId <= 0) {
             return $promedioMin;
         }
@@ -362,11 +386,6 @@ class CitaController {
 
     /**
      * Normaliza y valida los ítems de financiamiento enviados al agendar una cita.
-     * Retorna:
-     * - monto_contado_usd
-     * - monto_financiado_usd
-     * - cuotas_semanales (máximo de semanas configuradas entre los ítems financiados)
-     * - items_financiados (lista de ítems con modalidad financiada)
      */
     private static function resolverFinanciamientoCita(PDO $pdo, int $medicoId, array $input, array $serviciosResueltos, float $totalCitaUsd): array {
         $itemsFinanciados = [];
@@ -390,7 +409,7 @@ class CitaController {
                 $nombre = trim((string)($item['nombre_servicio'] ?? $item['nombre'] ?? 'Servicio'));
                 $precio = round((float)($item['precio'] ?? $item['precio_usd'] ?? 0.0), 2);
                 $esFin  = !empty($item['financiado']) || strtolower((string)($item['modalidad_pago'] ?? '')) === 'financiado';
-                $cuotas = max(0, (int)($item['cuotas_semanales'] ?? 0));
+                $cuotas = max(0, (int)($item['cuotas_semanales'] ?? $item['cantidad_cuotas'] ?? 0));
 
                 if ($esFin && $precio > 0) {
                     $cuotasEfectivas = $cuotas > 0 ? $cuotas : 1;
@@ -409,11 +428,12 @@ class CitaController {
                     $montoContado = round($montoContado + $precio, 2);
                 }
             }
-        } elseif (!empty($input['es_financiado'])) {
-            $cuotasInput = max(1, (int)($input['cuotas_semanales'] ?? 1));
+        } elseif (!empty($input['es_financiado']) || (isset($input['monto_financiado_usd']) && (float)$input['monto_financiado_usd'] > 0)) {
+            $cuotasInput = max(1, (int)($input['cuotas_semanales'] ?? $input['cantidad_cuotas'] ?? 1));
             $maxCuotas = $cuotasInput;
-            $montoFinanciado = round($totalCitaUsd > 0 ? $totalCitaUsd : 0.00, 2);
-            $montoContado = 0.00;
+            $montoFinInput = isset($input['monto_financiado_usd']) ? (float)$input['monto_financiado_usd'] : 0.0;
+            $montoFinanciado = round($montoFinInput > 0 ? $montoFinInput : ($totalCitaUsd > 0 ? $totalCitaUsd : 0.00), 2);
+            $montoContado = round(max(0.0, $totalCitaUsd - $montoFinanciado), 2);
             if ($montoFinanciado > 0) {
                 $itemsFinanciados[] = [
                     'nombre_servicio'  => trim((string)($input['procedimiento'] ?? 'Servicio Financiado')),
@@ -440,8 +460,6 @@ class CitaController {
 
     /**
      * GET /api/citas?medico_id=X&paciente_id=Y&fecha=YYYY-MM-DD
-     * Devuelve también pacientes_delante y tiempo_estimado_min calculados dinámicamente
-     * descontando el tiempo que ya lleva transcurrido la consulta en curso.
      */
     public static function listar() {
         try {
@@ -566,7 +584,6 @@ class CitaController {
 
                     $pacientesDelante = $enConsulta + $enEsperaDelante;
 
-                    // Si hay alguien en consulta actualmente, restar los minutos que ya lleva atendidos
                     $tiempoConsultaActualMin = 0.0;
                     if ($enConsulta > 0) {
                         $cacheKey = $medId . '_' . $fechaCita;
@@ -716,9 +733,9 @@ class CitaController {
                 if ($fechaCitaNorm < $fechaMinimaStr) {
                     http_response_code(422);
                     echo json_encode([
-                        "status"        => "error",
-                        "mensaje"       => "Para un financiamiento de {$cuotasSemanales} cuota(s) semanal(es), la fecha mínima de la cita es {$fechaMinimaStr}.",
-                        "fecha_minima"  => $fechaMinimaStr,
+                        "status"           => "error",
+                        "mensaje"          => "Para un financiamiento de {$cuotasSemanales} cuota(s) semanal(es), la fecha mínima de la cita es {$fechaMinimaStr}.",
+                        "fecha_minima"     => $fechaMinimaStr,
                         "cuotas_semanales" => $cuotasSemanales
                     ], JSON_UNESCAPED_UNICODE);
                     return;
@@ -805,11 +822,13 @@ class CitaController {
             $finanzaId = null;
             $primeraCuotaUsd = 0.00;
 
-            // Si hay monto financiado, registrar en gm_cuentas_por_cobrar y asentar la 1ra cuota en 'debe' de gm_finanzas
+            // Si hay monto financiado, registrar en gm_cuentas_por_cobrar (columnas unificadas) y asentar la 1ra cuota en 'debe' de gm_finanzas
             if ($montoFinanciado > 0 && $cuotasSemanales > 0) {
                 $primeraCuotaUsd = round($montoFinanciado / $cuotasSemanales, 2);
-                $fechaCredito = date('Y-m-d');
-                $fechaVencimiento = date('Y-m-d', strtotime('+' . ($cuotasSemanales * 7) . ' days'));
+                $fechaCredito = !empty($input['fecha_credito'])
+                    ? date('Y-m-d', strtotime((string)$input['fecha_credito']))
+                    : date('Y-m-d');
+                $fechaVencimiento = date('Y-m-d', strtotime($fechaCredito . ' +' . ($cuotasSemanales * 7) . ' days'));
 
                 $nombresFin = [];
                 foreach ($finData['items_financiados'] as $itF) {
@@ -821,21 +840,29 @@ class CitaController {
 
                 $insCxc = $pdo->prepare("
                     INSERT INTO gm_cuentas_por_cobrar
-                        (medico_id, paciente_id, cita_id, fecha_credito, fecha_vencimiento, descripcion, cuotas_semanales, monto_cuota_usd, debe_usd, haber_usd, saldo_usd, estado)
+                        (medico_id, paciente_id, cita_id, fecha, fecha_credito, fecha_vencimiento, descripcion,
+                         cantidad_cuotas, cuotas_semanales, monto_cuota_usd,
+                         debe, debe_usd, haber, haber_usd, saldo, saldo_usd, estado)
                     VALUES
-                        (:med, :pac, :cid, :fcred, :fvenc, :desc, :cuotas, :cuota_usd, :debe, 0.00, :saldo, 'pendiente')
+                        (:med, :pac, :cid, :fcred1, :fcred2, :fvenc, :desc,
+                         :cuotas1, :cuotas2, :cuota_usd,
+                         :debe1, :debe2, 0.00, 0.00, :saldo1, :saldo2, 'pendiente')
                 ");
                 $insCxc->execute([
                     ':med'       => $medicoId,
                     ':pac'       => $pacienteId,
                     ':cid'       => $citaId,
-                    ':fcred'     => $fechaCredito,
+                    ':fcred1'    => $fechaCredito,
+                    ':fcred2'    => $fechaCredito,
                     ':fvenc'     => $fechaVencimiento,
                     ':desc'      => $descCxc,
-                    ':cuotas'    => $cuotasSemanales,
+                    ':cuotas1'   => $cuotasSemanales,
+                    ':cuotas2'   => $cuotasSemanales,
                     ':cuota_usd' => $primeraCuotaUsd,
-                    ':debe'      => $montoFinanciado,
-                    ':saldo'     => $montoFinanciado,
+                    ':debe1'     => $montoFinanciado,
+                    ':debe2'     => $montoFinanciado,
+                    ':saldo1'    => $montoFinanciado,
+                    ':saldo2'    => $montoFinanciado,
                 ]);
                 $cxcId = (int)$pdo->lastInsertId();
 
@@ -844,26 +871,19 @@ class CitaController {
                 $debeBs = round($primeraCuotaUsd * $tasaBcv, 2);
 
                 $saldoPrevStmt = $pdo->prepare("
-                    SELECT COALESCE(saldo, 0)
+                    SELECT COALESCE(saldo, 0) AS saldo_usd, COALESCE(saldo_bs, 0) AS saldo_bs
                     FROM gm_finanzas
                     WHERE medico_id = :med
                     ORDER BY id DESC
                     LIMIT 1
                 ");
                 $saldoPrevStmt->execute([':med' => $medicoId]);
-                $saldoPrevUsd = (float)$saldoPrevStmt->fetchColumn();
-                $nuevoSaldoUsd = round($saldoPrevUsd + $primeraCuotaUsd, 2);
+                $prevRow = $saldoPrevStmt->fetch(PDO::FETCH_ASSOC);
+                $saldoPrevUsd = (float)($prevRow['saldo_usd'] ?? 0);
+                $saldoPrevBs  = (float)($prevRow['saldo_bs'] ?? 0);
 
-                $saldoPrevBsStmt = $pdo->prepare("
-                    SELECT COALESCE(saldo_bs, 0)
-                    FROM gm_finanzas
-                    WHERE medico_id = :med
-                    ORDER BY id DESC
-                    LIMIT 1
-                ");
-                $saldoPrevBsStmt->execute([':med' => $medicoId]);
-                $saldoPrevBs = (float)$saldoPrevBsStmt->fetchColumn();
-                $nuevoSaldoBs = round($saldoPrevBs + $debeBs, 2);
+                $nuevoSaldoUsd = round($saldoPrevUsd + $primeraCuotaUsd, 2);
+                $nuevoSaldoBs  = round($saldoPrevBs + $debeBs, 2);
 
                 $conceptoCuota = "1ra cuota semanal (1/{$cuotasSemanales}) financiamiento - {$procedimiento} (Cita #{$citaId})";
 
@@ -917,8 +937,6 @@ class CitaController {
 
     /**
      * PUT /api/citas
-     * Permite cambiar estado (confirmar, en_espera, en_consulta, completada, cancelar),
-     * reprogramar fecha/hora y gestionar automáticamente el cronómetro de gm_tiempo_atencion.
      */
     public static function actualizar($input) {
         try {
@@ -1000,7 +1018,6 @@ class CitaController {
             $stmt = $pdo->prepare($sql);
             $stmt->execute($params);
 
-            // Sincronización automática de gm_tiempo_atencion según el cambio de estado
             $estadoLower = strtolower($nuevoEstado);
             if ($estadoLower === 'en_consulta') {
                 self::registrarInicioTiempoAtencion(
@@ -1025,7 +1042,7 @@ class CitaController {
     }
 
     /**
-     * Inicia el registro de tiempo en gm_tiempo_atencion (evitando duplicados si ya está en_proceso)
+     * Inicia el registro de tiempo en gm_tiempo_atencion
      */
     public static function registrarInicioTiempoAtencion(PDO $pdo, int $citaId, int $medicoId, int $pacienteId = 0): void {
         self::asegurarEsquemaCola($pdo);
@@ -1224,7 +1241,6 @@ class CitaController {
 
     /**
      * GET /marcar-llegada?medico_id=X o ?wpgm_marcar_llegada=1&medico_id=X
-     * Hereda dinámicamente los colores del tema activo configurado por el administrador en gm_configuracion.
      */
     public static function renderizarCheckInWeb() {
         header("Content-Type: text/html; charset=utf-8");
@@ -1426,7 +1442,6 @@ class CitaController {
 
     /**
      * POST /api/citas/iniciar-atencion
-     * Inicia la consulta del paciente y guarda el registro inicial en gm_tiempo_atencion
      */
     public static function iniciarAtencion($input) {
         try {
@@ -1578,7 +1593,7 @@ class CitaController {
                 }
 
                 $stmtServ = $pdo->prepare("
-                    SELECT id, tipo, nombre_servicio, descripcion, precio, items_combo, estado
+                    SELECT *
                     FROM gm_servicios
                     WHERE medico_id = :mid
                       AND (estado IS NULL OR TRIM(LOWER(estado)) != 'inactivo')
