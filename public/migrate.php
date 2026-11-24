@@ -262,6 +262,8 @@ try {
             `medico_id` bigint(20) NOT NULL,
             `paciente_id` bigint(20) NOT NULL,
             `historia_id` mediumint(9) DEFAULT NULL,
+            `cita_id` mediumint(9) DEFAULT NULL,
+            `servicio_id` mediumint(9) DEFAULT NULL,
             `fecha` date NOT NULL,
             `concepto` varchar(255) NOT NULL,
             `debe` decimal(10,2) NOT NULL DEFAULT 0.00,
@@ -320,6 +322,7 @@ try {
             PRIMARY KEY (`id`),
             INDEX `idx_cxc_medico_fecha` (`medico_id`, `fecha`),
             INDEX `idx_cxc_paciente` (`paciente_id`),
+            INDEX `idx_cxc_cita` (`cita_id`),
             INDEX `idx_cxc_vencimiento` (`fecha_vencimiento`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;",
 
@@ -404,8 +407,10 @@ try {
         }
     }
 
-    // Asegurar TODAS las columnas posibles en gm_cuentas_por_cobrar
+    // Asegurar TODAS las columnas posibles en gm_cuentas_por_cobrar (incluyendo cita_id y servicio_id)
     $colsCxc = [
+        'cita_id'             => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `cita_id` mediumint(9) DEFAULT NULL AFTER `paciente_id`",
+        'servicio_id'         => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `servicio_id` mediumint(9) DEFAULT NULL AFTER `cita_id`",
         'finanza_id'          => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `finanza_id` mediumint(9) DEFAULT NULL AFTER `servicio_id`",
         'fecha_credito'       => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `fecha_credito` date DEFAULT NULL AFTER `fecha`",
         'concepto'            => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `concepto` varchar(255) DEFAULT NULL AFTER `descripcion`",
@@ -448,8 +453,10 @@ try {
         }
     }
 
-    // Asegurar columnas de facturación en gm_finanzas si la tabla ya existía previamente
+    // Asegurar columnas de relación y facturación en gm_finanzas si la tabla ya existía previamente
     $colsFinanzas = [
+        'cita_id'         => "ALTER TABLE `gm_finanzas` ADD COLUMN `cita_id` mediumint(9) DEFAULT NULL AFTER `historia_id`",
+        'servicio_id'     => "ALTER TABLE `gm_finanzas` ADD COLUMN `servicio_id` mediumint(9) DEFAULT NULL AFTER `cita_id`",
         'facturado'       => "ALTER TABLE `gm_finanzas` ADD COLUMN `facturado` tinyint(1) NOT NULL DEFAULT 0",
         'numero_factura'  => "ALTER TABLE `gm_finanzas` ADD COLUMN `numero_factura` varchar(50) DEFAULT NULL",
         'url_factura_pdf' => "ALTER TABLE `gm_finanzas` ADD COLUMN `url_factura_pdf` varchar(500) DEFAULT NULL",

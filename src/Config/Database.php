@@ -162,16 +162,18 @@ class Database {
                     PRIMARY KEY (`id`),
                     INDEX `idx_cxc_medico_fecha` (`medico_id`, `fecha`),
                     INDEX `idx_cxc_paciente` (`paciente_id`),
+                    INDEX `idx_cxc_cita` (`cita_id`),
                     INDEX `idx_cxc_vencimiento` (`fecha_vencimiento`)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             ");
 
-            // Permitir NULL por defecto en fecha y fecha_vencimiento si la tabla ya existía sin valor por defecto
             $pdo->exec("ALTER TABLE `gm_cuentas_por_cobrar` MODIFY COLUMN `fecha` date DEFAULT NULL");
             $pdo->exec("ALTER TABLE `gm_cuentas_por_cobrar` MODIFY COLUMN `fecha_vencimiento` date DEFAULT NULL");
             $pdo->exec("ALTER TABLE `gm_cuentas_por_cobrar` MODIFY COLUMN `descripcion` varchar(255) NOT NULL DEFAULT ''");
 
             $columnasCxc = [
+                'cita_id'             => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `cita_id` mediumint(9) DEFAULT NULL AFTER `paciente_id`",
+                'servicio_id'         => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `servicio_id` mediumint(9) DEFAULT NULL AFTER `cita_id`",
                 'finanza_id'          => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `finanza_id` mediumint(9) DEFAULT NULL AFTER `servicio_id`",
                 'fecha_credito'       => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `fecha_credito` date DEFAULT NULL AFTER `fecha`",
                 'concepto'            => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `concepto` varchar(255) DEFAULT NULL AFTER `descripcion`",
@@ -199,6 +201,24 @@ class Database {
                 $stmtCol = $pdo->query("SHOW COLUMNS FROM `gm_cuentas_por_cobrar` LIKE '{$columna}'");
                 if ($stmtCol && !$stmtCol->fetch()) {
                     $pdo->exec($sqlAlter);
+                }
+            }
+
+            // Asegurar también cita_id y servicio_id en gm_finanzas por si el backend los registra allí
+            $stmtTablaFin = $pdo->query("SHOW TABLES LIKE 'gm_finanzas'");
+            if ($stmtTablaFin && $stmtTablaFin->fetch()) {
+                $columnasFinanzas = [
+                    'cita_id'         => "ALTER TABLE `gm_finanzas` ADD COLUMN `cita_id` mediumint(9) DEFAULT NULL AFTER `historia_id`",
+                    'servicio_id'     => "ALTER TABLE `gm_finanzas` ADD COLUMN `servicio_id` mediumint(9) DEFAULT NULL AFTER `cita_id`",
+                    'facturado'       => "ALTER TABLE `gm_finanzas` ADD COLUMN `facturado` tinyint(1) NOT NULL DEFAULT 0",
+                    'numero_factura'  => "ALTER TABLE `gm_finanzas` ADD COLUMN `numero_factura` varchar(50) DEFAULT NULL",
+                    'url_factura_pdf' => "ALTER TABLE `gm_finanzas` ADD COLUMN `url_factura_pdf` varchar(500) DEFAULT NULL",
+                ];
+                foreach ($columnasFinanzas as $columna => $sqlAlter) {
+                    $stmtCol = $pdo->query("SHOW COLUMNS FROM `gm_finanzas` LIKE '{$columna}'");
+                    if ($stmtCol && !$stmtCol->fetch()) {
+                        $pdo->exec($sqlAlter);
+                    }
                 }
             }
         } catch (Exception $e) {
