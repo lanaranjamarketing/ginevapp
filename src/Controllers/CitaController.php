@@ -8,7 +8,8 @@ use Exception;
 class CitaController {
 
     /**
-     * Asegura que existan las columnas y tablas necesarias para cola, check-in QR y control de tiempos.
+     * Asegura que existan las columnas y tablas necesarias para cola, check-in QR,
+     * control de tiempos, financiamiento, cuentas por cobrar y finanzas.
      * Alineado con la estructura real de gm_tiempo_atencion:
      * (id, cita_id, medico_id, paciente_id, dia, tiempo, estado, inicio, fin)
      */
@@ -20,6 +21,15 @@ class CitaController {
             }
             if (!in_array('numero_llegada', $cols, true)) {
                 $pdo->exec("ALTER TABLE gm_citas ADD COLUMN numero_llegada INT DEFAULT 0");
+            }
+            if (!in_array('monto_contado_usd', $cols, true)) {
+                $pdo->exec("ALTER TABLE gm_citas ADD COLUMN monto_contado_usd DECIMAL(12,2) NOT NULL DEFAULT 0.00");
+            }
+            if (!in_array('monto_financiado_usd', $cols, true)) {
+                $pdo->exec("ALTER TABLE gm_citas ADD COLUMN monto_financiado_usd DECIMAL(12,2) NOT NULL DEFAULT 0.00");
+            }
+            if (!in_array('cuotas_semanales', $cols, true)) {
+                $pdo->exec("ALTER TABLE gm_citas ADD COLUMN cuotas_semanales INT NOT NULL DEFAULT 0");
             }
         } catch (Exception $e) {}
 
@@ -38,6 +48,67 @@ class CitaController {
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             ");
         } catch (Exception $e) {}
+
+        try {
+            $pdo->exec("
+                CREATE TABLE IF NOT EXISTS gm_cuentas_por_cobrar (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    medico_id INT NOT NULL,
+                    paciente_id INT NOT NULL,
+                    cita_id INT NULL,
+                    fecha_credito DATE NOT NULL,
+                    fecha_vencimiento DATE NOT NULL,
+                    descripcion VARCHAR(500) NOT NULL DEFAULT '',
+                    cuotas_semanales INT NOT NULL DEFAULT 1,
+                    monto_cuota_usd DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+                    debe_usd DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+                    haber_usd DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+                    saldo_usd DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+                    estado VARCHAR(30) NOT NULL DEFAULT 'pendiente',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_cxc_medico_pac (medico_id, paciente_id),
+                    INDEX idx_cxc_cita (cita_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            ");
+        } catch (Exception $e) {}
+
+        try {
+            $pdo->exec("
+                CREATE TABLE IF NOT EXISTS gm_finanzas (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    medico_id INT NOT NULL,
+                    paciente_id INT NOT NULL DEFAULT 0,
+                    cita_id INT NULL,
+                    historia_id INT NULL,
+                    fecha DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    concepto VARCHAR(500) NOT NULL DEFAULT '',
+                    debe DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+                    haber DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+                    saldo DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+                    debe_bs DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+                    haber_bs DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+                    saldo_bs DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+                    tasa_bcv DECIMAL(12,4) NOT NULL DEFAULT 1.0000,
+                    facturado TINYINT(1) NOT NULL DEFAULT 0,
+                    INDEX idx_fin_medico_pac (medico_id, paciente_id),
+                    INDEX idx_fin_fecha (fecha)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            ");
+        } catch (Exception $e) {}
+    }
+
+    /**
+     * Obtiene la última tasa BCV registrada en gm_tasa_bcv (fallback 1.0000).
+     */
+    private static function obtenerTasaBcvActual(PDO $pdo): float {
+        try {
+            $stmt = $pdo->query("SELECT tasa_usd FROM gm_tasa_bcv ORDER BY id DESC LIMIT 1");
+            $val = $stmt ? $stmt->fetchColumn() : null;
+            $tasa = (float)$val;
+            return $tasa > 0 ? $tasa : 1.0000;
+        } catch (Exception $e) {
+            return 1.0000;
+        }
     }
 
     /**
@@ -169,10 +240,10 @@ class CitaController {
     }
 
     /**
-     * Desglosa los servicios seleccionados en una cita (desde el texto 'procedimiento'
-     * o un arreglo 'servicios') y obtiene su precio real en gm_servicios.
+     * Desglosa los servicios seleccionados en una cita (desde el texto 'procedimiento',
+     * un arreglo 'servicios' o 'servicios_ids') y obtiene su precio real en gm_servicios.
      */
-    private static function resolverServiciosCita(PDO $pdo, int $medicoId, string $procedimiento, $serviciosInput = null): array {
+    private static function resolverServiciosCita(PDO $pdo, int $medicoId, string $procedimiento, $serviciosInput = null, $serviciosIdsInput = null): array {
         $itemsNombres = [];
 
         if (is_string($serviciosInput) && trim($serviciosInput) !== '') {
@@ -190,6 +261,26 @@ class CitaController {
                     $nom = trim((string)($srv['nombre_servicio'] ?? $srv['nombre'] ?? $srv['titulo'] ?? ''));
                     if ($nom !== '') {
                         $itemsNombres[] = $nom;
+                    }
+                }
+            }
+        }
+
+        if (empty($itemsNombres) && is_array($serviciosIdsInput) && !empty($serviciosIdsInput) && $medicoId > 0) {
+            $idsLimpios = [];
+            foreach ($serviciosIdsInput as $sid) {
+                $idInt = (int)$sid;
+                if ($idInt > 0) {
+                    $idsLimpios[] = $idInt;
+                }
+            }
+            if (!empty($idsLimpios)) {
+                $placeholders = implode(',', array_fill(0, count($idsLimpios), '?'));
+                $stmtIds = $pdo->prepare("SELECT nombre_servicio FROM gm_servicios WHERE medico_id = ? AND id IN ($placeholders)");
+                $stmtIds->execute(array_merge([$medicoId], $idsLimpios));
+                foreach ($stmtIds->fetchAll(PDO::FETCH_COLUMN) as $nomSrv) {
+                    if (trim((string)$nomSrv) !== '') {
+                        $itemsNombres[] = trim((string)$nomSrv);
                     }
                 }
             }
@@ -267,6 +358,84 @@ class CitaController {
     private static function calcularMontoServicios(PDO $pdo, int $medicoId, string $procedimiento, $serviciosInput = null): float {
         $res = self::resolverServiciosCita($pdo, $medicoId, $procedimiento, $serviciosInput);
         return (float)$res['total'];
+    }
+
+    /**
+     * Normaliza y valida los ítems de financiamiento enviados al agendar una cita.
+     * Retorna:
+     * - monto_contado_usd
+     * - monto_financiado_usd
+     * - cuotas_semanales (máximo de semanas configuradas entre los ítems financiados)
+     * - items_financiados (lista de ítems con modalidad financiada)
+     */
+    private static function resolverFinanciamientoCita(PDO $pdo, int $medicoId, array $input, array $serviciosResueltos, float $totalCitaUsd): array {
+        $itemsFinanciados = [];
+        $montoFinanciado  = 0.00;
+        $montoContado     = 0.00;
+        $maxCuotas        = 0;
+
+        $detalleFinInput = $input['detalle_financiamiento'] ?? $input['items_financiamiento'] ?? null;
+        if (is_string($detalleFinInput) && trim($detalleFinInput) !== '') {
+            $decoded = json_decode($detalleFinInput, true);
+            if (is_array($decoded)) {
+                $detalleFinInput = $decoded;
+            }
+        }
+
+        if (is_array($detalleFinInput) && !empty($detalleFinInput)) {
+            foreach ($detalleFinInput as $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+                $nombre = trim((string)($item['nombre_servicio'] ?? $item['nombre'] ?? 'Servicio'));
+                $precio = round((float)($item['precio'] ?? $item['precio_usd'] ?? 0.0), 2);
+                $esFin  = !empty($item['financiado']) || strtolower((string)($item['modalidad_pago'] ?? '')) === 'financiado';
+                $cuotas = max(0, (int)($item['cuotas_semanales'] ?? 0));
+
+                if ($esFin && $precio > 0) {
+                    $cuotasEfectivas = $cuotas > 0 ? $cuotas : 1;
+                    if ($cuotasEfectivas > $maxCuotas) {
+                        $maxCuotas = $cuotasEfectivas;
+                    }
+                    $montoCuota = round($precio / $cuotasEfectivas, 2);
+                    $montoFinanciado = round($montoFinanciado + $precio, 2);
+                    $itemsFinanciados[] = [
+                        'nombre_servicio'  => $nombre,
+                        'precio_usd'       => $precio,
+                        'cuotas_semanales' => $cuotasEfectivas,
+                        'monto_cuota_usd'  => $montoCuota,
+                    ];
+                } elseif ($precio > 0) {
+                    $montoContado = round($montoContado + $precio, 2);
+                }
+            }
+        } elseif (!empty($input['es_financiado'])) {
+            $cuotasInput = max(1, (int)($input['cuotas_semanales'] ?? 1));
+            $maxCuotas = $cuotasInput;
+            $montoFinanciado = round($totalCitaUsd > 0 ? $totalCitaUsd : 0.00, 2);
+            $montoContado = 0.00;
+            if ($montoFinanciado > 0) {
+                $itemsFinanciados[] = [
+                    'nombre_servicio'  => trim((string)($input['procedimiento'] ?? 'Servicio Financiado')),
+                    'precio_usd'       => $montoFinanciado,
+                    'cuotas_semanales' => $cuotasInput,
+                    'monto_cuota_usd'  => round($montoFinanciado / $cuotasInput, 2),
+                ];
+            }
+        } else {
+            $montoContado = round($totalCitaUsd, 2);
+        }
+
+        if ($montoContado === 0.00 && $montoFinanciado === 0.00 && $totalCitaUsd > 0) {
+            $montoContado = round($totalCitaUsd, 2);
+        }
+
+        return [
+            'monto_contado_usd'    => round($montoContado, 2),
+            'monto_financiado_usd' => round($montoFinanciado, 2),
+            'cuotas_semanales'     => $maxCuotas,
+            'items_financiados'    => $itemsFinanciados,
+        ];
     }
 
     /**
@@ -420,6 +589,9 @@ class CitaController {
                 $cita['total_usd']             = $montoFormateado;
                 $cita['monto_usd']             = $montoFormateado;
                 $cita['monto_total']           = $montoFormateado;
+                $cita['monto_contado_usd']     = number_format((float)($cita['monto_contado_usd'] ?? $montoGuardado), 2, '.', '');
+                $cita['monto_financiado_usd']  = number_format((float)($cita['monto_financiado_usd'] ?? 0), 2, '.', '');
+                $cita['cuotas_semanales']      = (int)($cita['cuotas_semanales'] ?? 0);
                 $cita['numero_llegada']        = (int)($cita['numero_llegada'] ?? 0);
                 $cita['tipo_cita']             = trim((string)($cita['tipo_cita'] ?? 'Hora Programada'));
                 $cita['promedio_atencion_min'] = (int)round($promMin);
@@ -442,7 +614,9 @@ class CitaController {
 
     /**
      * POST /api/citas
-     * Agenda una nueva cita detectando automáticamente si el día es por Orden de Llegada
+     * Agenda una nueva cita detectando automáticamente si el día es por Orden de Llegada,
+     * validando la fecha mínima según cuotas semanales financiadas y registrando en
+     * gm_cuentas_por_cobrar + primera cuota en el 'debe' de gm_finanzas.
      */
     public static function crear($input) {
         try {
@@ -458,8 +632,17 @@ class CitaController {
             $pdo = Database::conectar();
             self::asegurarEsquemaCola($pdo);
 
-            $medicoId  = (int)$input['medico_id'];
-            $fechaCita = trim((string)$input['fecha_cita']);
+            $medicoId   = (int)$input['medico_id'];
+            $pacienteId = (int)$input['paciente_id'];
+            $fechaCita  = trim((string)$input['fecha_cita']);
+
+            $tsFechaCita = strtotime($fechaCita);
+            if ($tsFechaCita === false) {
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "La fecha de la cita no es válida."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+            $fechaCitaNorm = date('Y-m-d', $tsFechaCita);
 
             $calStmt = $pdo->prepare("SELECT cupos_por_bloque, default_status, dias_config FROM gm_calendarios WHERE id = :id LIMIT 1");
             $calStmt->execute([':id' => (int)$input['calendario_id']]);
@@ -473,55 +656,10 @@ class CitaController {
 
             $tipoCitaDetectado = !empty($input['tipo_cita'])
                 ? trim((string)$input['tipo_cita'])
-                : self::detectarModalidadDia($cal['dias_config'] ?? null, $fechaCita);
+                : self::detectarModalidadDia($cal['dias_config'] ?? null, $fechaCitaNorm);
 
             $esOrdenLlegada  = (stripos($tipoCitaDetectado, 'orden') !== false);
             $horaNormalizada = strlen($input['hora_cita']) === 5 ? $input['hora_cita'] . ':00' : $input['hora_cita'];
-
-            if ($esOrdenLlegada) {
-                $ocupStmt = $pdo->prepare("
-                    SELECT COUNT(*) 
-                    FROM gm_citas 
-                    WHERE medico_id = :med 
-                      AND calendario_id = :cal 
-                      AND fecha_cita = :fecha 
-                      AND estado_cita COLLATE utf8mb4_unicode_ci != 'cancelada' COLLATE utf8mb4_unicode_ci
-                ");
-                $ocupStmt->execute([
-                    ':med'   => $medicoId,
-                    ':cal'   => (int)$input['calendario_id'],
-                    ':fecha' => $fechaCita
-                ]);
-                $ocupados    = (int)$ocupStmt->fetchColumn();
-                $limiteCupos = max(1, (int)$cal['cupos_por_bloque']);
-
-                if ($ocupados >= $limiteCupos) {
-                    http_response_code(409);
-                    echo json_encode(["status" => "error", "mensaje" => "Ya se alcanzó el límite máximo de cupos para este día."], JSON_UNESCAPED_UNICODE);
-                    return;
-                }
-            } else {
-                $ocupStmt = $pdo->prepare("
-                    SELECT COUNT(*) 
-                    FROM gm_citas 
-                    WHERE medico_id = :med 
-                      AND fecha_cita = :fecha 
-                      AND hora_cita = :hora 
-                      AND estado_cita COLLATE utf8mb4_unicode_ci != 'cancelada' COLLATE utf8mb4_unicode_ci
-                ");
-                $ocupStmt->execute([
-                    ':med'   => $medicoId,
-                    ':fecha' => $fechaCita,
-                    ':hora'  => $horaNormalizada
-                ]);
-                $ocupados = (int)$ocupStmt->fetchColumn();
-
-                if ($ocupados >= (int)$cal['cupos_por_bloque']) {
-                    http_response_code(409);
-                    echo json_encode(["status" => "error", "mensaje" => "Este bloque horario ya alcanzó el límite máximo de cupos disponibles."], JSON_UNESCAPED_UNICODE);
-                    return;
-                }
-            }
 
             $estadoInicial = $input['estado_cita'] ?? ($cal['default_status'] ?: 'reservada');
 
@@ -544,50 +682,234 @@ class CitaController {
                 $procedimiento = 'Consulta General';
             }
 
-            $totalUsd = isset($input['total_usd'])
-                ? (float)$input['total_usd']
-                : (isset($input['monto_usd']) ? (float)$input['monto_usd'] : (isset($input['monto_total']) ? (float)$input['monto_total'] : 0.00));
+            $serviciosResueltos = self::resolverServiciosCita(
+                $pdo,
+                $medicoId,
+                $procedimiento,
+                $input['servicios'] ?? null,
+                $input['servicios_ids'] ?? null
+            );
 
-            if ($totalUsd <= 0) {
-                $totalUsd = self::calcularMontoServicios($pdo, $medicoId, $procedimiento, $input['servicios'] ?? null);
+            $totalUsd = isset($input['total_usd']) && (float)$input['total_usd'] > 0
+                ? (float)$input['total_usd']
+                : (isset($input['monto_usd']) && (float)$input['monto_usd'] > 0
+                    ? (float)$input['monto_usd']
+                    : (isset($input['monto_total']) && (float)$input['monto_total'] > 0
+                        ? (float)$input['monto_total']
+                        : (float)$serviciosResueltos['total']));
+
+            if ($totalUsd <= 0 && $serviciosResueltos['total'] > 0) {
+                $totalUsd = (float)$serviciosResueltos['total'];
+            }
+            $totalUsd = round($totalUsd, 2);
+
+            $finData = self::resolverFinanciamientoCita($pdo, $medicoId, $input, $serviciosResueltos, $totalUsd);
+            $cuotasSemanales = (int)$finData['cuotas_semanales'];
+            $montoFinanciado = (float)$finData['monto_financiado_usd'];
+            $montoContado    = (float)$finData['monto_contado_usd'];
+
+            // Validación de fecha mínima según cuotas semanales financiadas
+            $hoyStr = date('Y-m-d');
+            $fechaMinimaStr = $hoyStr;
+            if ($montoFinanciado > 0 && $cuotasSemanales > 0) {
+                $fechaMinimaStr = date('Y-m-d', strtotime('+' . ($cuotasSemanales * 7) . ' days'));
+                if ($fechaCitaNorm < $fechaMinimaStr) {
+                    http_response_code(422);
+                    echo json_encode([
+                        "status"        => "error",
+                        "mensaje"       => "Para un financiamiento de {$cuotasSemanales} cuota(s) semanal(es), la fecha mínima de la cita es {$fechaMinimaStr}.",
+                        "fecha_minima"  => $fechaMinimaStr,
+                        "cuotas_semanales" => $cuotasSemanales
+                    ], JSON_UNESCAPED_UNICODE);
+                    return;
+                }
+            }
+
+            if ($esOrdenLlegada) {
+                $ocupStmt = $pdo->prepare("
+                    SELECT COUNT(*) 
+                    FROM gm_citas 
+                    WHERE medico_id = :med 
+                      AND calendario_id = :cal 
+                      AND fecha_cita = :fecha 
+                      AND estado_cita COLLATE utf8mb4_unicode_ci != 'cancelada' COLLATE utf8mb4_unicode_ci
+                ");
+                $ocupStmt->execute([
+                    ':med'   => $medicoId,
+                    ':cal'   => (int)$input['calendario_id'],
+                    ':fecha' => $fechaCitaNorm
+                ]);
+                $ocupados    = (int)$ocupStmt->fetchColumn();
+                $limiteCupos = max(1, (int)$cal['cupos_por_bloque']);
+
+                if ($ocupados >= $limiteCupos) {
+                    http_response_code(409);
+                    echo json_encode(["status" => "error", "mensaje" => "Ya se alcanzó el límite máximo de cupos para este día."], JSON_UNESCAPED_UNICODE);
+                    return;
+                }
+            } else {
+                $ocupStmt = $pdo->prepare("
+                    SELECT COUNT(*) 
+                    FROM gm_citas 
+                    WHERE medico_id = :med 
+                      AND fecha_cita = :fecha 
+                      AND hora_cita = :hora 
+                      AND estado_cita COLLATE utf8mb4_unicode_ci != 'cancelada' COLLATE utf8mb4_unicode_ci
+                ");
+                $ocupStmt->execute([
+                    ':med'   => $medicoId,
+                    ':fecha' => $fechaCitaNorm,
+                    ':hora'  => $horaNormalizada
+                ]);
+                $ocupados = (int)$ocupStmt->fetchColumn();
+
+                if ($ocupados >= (int)$cal['cupos_por_bloque']) {
+                    http_response_code(409);
+                    echo json_encode(["status" => "error", "mensaje" => "Este bloque horario ya alcanzó el límite máximo de cupos disponibles."], JSON_UNESCAPED_UNICODE);
+                    return;
+                }
             }
 
             $numeroLlegada = 0;
             if ($estadoInicial === 'en_espera') {
                 $maxStmt = $pdo->prepare("SELECT COALESCE(MAX(numero_llegada), 0) FROM gm_citas WHERE medico_id = :med AND fecha_cita = :fecha");
-                $maxStmt->execute([':med' => $medicoId, ':fecha' => $fechaCita]);
+                $maxStmt->execute([':med' => $medicoId, ':fecha' => $fechaCitaNorm]);
                 $numeroLlegada = (int)$maxStmt->fetchColumn() + 1;
             }
 
+            $pdo->beginTransaction();
+
             $sql = "INSERT INTO gm_citas 
-                    (calendario_id, paciente_id, medico_id, fecha_cita, hora_cita, procedimiento, total_usd, estado_cita, tipo_cita, numero_llegada)
+                    (calendario_id, paciente_id, medico_id, fecha_cita, hora_cita, procedimiento, total_usd, monto_contado_usd, monto_financiado_usd, cuotas_semanales, estado_cita, tipo_cita, numero_llegada)
                     VALUES 
-                    (:cal, :pac, :med, :fecha, :hora, :proc, :total, :estado, :tipo, :turno)";
+                    (:cal, :pac, :med, :fecha, :hora, :proc, :total, :contado, :financiado, :cuotas, :estado, :tipo, :turno)";
             $stmt = $pdo->prepare($sql);
             $stmt->execute([
-                ':cal'    => (int)$input['calendario_id'],
-                ':pac'    => (int)$input['paciente_id'],
-                ':med'    => $medicoId,
-                ':fecha'  => $fechaCita,
-                ':hora'   => $horaNormalizada,
-                ':proc'   => $procedimiento,
-                ':total'  => round($totalUsd, 2),
-                ':estado' => $estadoInicial,
-                ':tipo'   => $tipoCitaDetectado,
-                ':turno'  => $numeroLlegada
+                ':cal'        => (int)$input['calendario_id'],
+                ':pac'        => $pacienteId,
+                ':med'        => $medicoId,
+                ':fecha'      => $fechaCitaNorm,
+                ':hora'       => $horaNormalizada,
+                ':proc'       => $procedimiento,
+                ':total'      => $totalUsd,
+                ':contado'    => $montoContado,
+                ':financiado' => $montoFinanciado,
+                ':cuotas'     => $cuotasSemanales,
+                ':estado'     => $estadoInicial,
+                ':tipo'       => $tipoCitaDetectado,
+                ':turno'      => $numeroLlegada
             ]);
+
+            $citaId = (int)$pdo->lastInsertId();
+            $cxcId = null;
+            $finanzaId = null;
+            $primeraCuotaUsd = 0.00;
+
+            // Si hay monto financiado, registrar en gm_cuentas_por_cobrar y asentar la 1ra cuota en 'debe' de gm_finanzas
+            if ($montoFinanciado > 0 && $cuotasSemanales > 0) {
+                $primeraCuotaUsd = round($montoFinanciado / $cuotasSemanales, 2);
+                $fechaCredito = date('Y-m-d');
+                $fechaVencimiento = date('Y-m-d', strtotime('+' . ($cuotasSemanales * 7) . ' days'));
+
+                $nombresFin = [];
+                foreach ($finData['items_financiados'] as $itF) {
+                    $nombresFin[] = $itF['nombre_servicio'] . ' (' . (int)$itF['cuotas_semanales'] . ' sem)';
+                }
+                $descCxc = !empty($nombresFin)
+                    ? implode(', ', $nombresFin) . ' — Cita #' . $citaId
+                    : $procedimiento . ' — Cita #' . $citaId;
+
+                $insCxc = $pdo->prepare("
+                    INSERT INTO gm_cuentas_por_cobrar
+                        (medico_id, paciente_id, cita_id, fecha_credito, fecha_vencimiento, descripcion, cuotas_semanales, monto_cuota_usd, debe_usd, haber_usd, saldo_usd, estado)
+                    VALUES
+                        (:med, :pac, :cid, :fcred, :fvenc, :desc, :cuotas, :cuota_usd, :debe, 0.00, :saldo, 'pendiente')
+                ");
+                $insCxc->execute([
+                    ':med'       => $medicoId,
+                    ':pac'       => $pacienteId,
+                    ':cid'       => $citaId,
+                    ':fcred'     => $fechaCredito,
+                    ':fvenc'     => $fechaVencimiento,
+                    ':desc'      => $descCxc,
+                    ':cuotas'    => $cuotasSemanales,
+                    ':cuota_usd' => $primeraCuotaUsd,
+                    ':debe'      => $montoFinanciado,
+                    ':saldo'     => $montoFinanciado,
+                ]);
+                $cxcId = (int)$pdo->lastInsertId();
+
+                // Asentar 1ra cuota semanal en el 'debe' de gm_finanzas
+                $tasaBcv = self::obtenerTasaBcvActual($pdo);
+                $debeBs = round($primeraCuotaUsd * $tasaBcv, 2);
+
+                $saldoPrevStmt = $pdo->prepare("
+                    SELECT COALESCE(saldo, 0)
+                    FROM gm_finanzas
+                    WHERE medico_id = :med
+                    ORDER BY id DESC
+                    LIMIT 1
+                ");
+                $saldoPrevStmt->execute([':med' => $medicoId]);
+                $saldoPrevUsd = (float)$saldoPrevStmt->fetchColumn();
+                $nuevoSaldoUsd = round($saldoPrevUsd + $primeraCuotaUsd, 2);
+
+                $saldoPrevBsStmt = $pdo->prepare("
+                    SELECT COALESCE(saldo_bs, 0)
+                    FROM gm_finanzas
+                    WHERE medico_id = :med
+                    ORDER BY id DESC
+                    LIMIT 1
+                ");
+                $saldoPrevBsStmt->execute([':med' => $medicoId]);
+                $saldoPrevBs = (float)$saldoPrevBsStmt->fetchColumn();
+                $nuevoSaldoBs = round($saldoPrevBs + $debeBs, 2);
+
+                $conceptoCuota = "1ra cuota semanal (1/{$cuotasSemanales}) financiamiento - {$procedimiento} (Cita #{$citaId})";
+
+                $insFin = $pdo->prepare("
+                    INSERT INTO gm_finanzas
+                        (medico_id, paciente_id, cita_id, fecha, concepto, debe, haber, saldo, debe_bs, haber_bs, saldo_bs, tasa_bcv, facturado)
+                    VALUES
+                        (:med, :pac, :cid, NOW(), :concepto, :debe, 0.00, :saldo, :debe_bs, 0.00, :saldo_bs, :tasa, 0)
+                ");
+                $insFin->execute([
+                    ':med'      => $medicoId,
+                    ':pac'      => $pacienteId,
+                    ':cid'      => $citaId,
+                    ':concepto' => $conceptoCuota,
+                    ':debe'     => $primeraCuotaUsd,
+                    ':saldo'    => $nuevoSaldoUsd,
+                    ':debe_bs'  => $debeBs,
+                    ':saldo_bs' => $nuevoSaldoBs,
+                    ':tasa'     => $tasaBcv,
+                ]);
+                $finanzaId = (int)$pdo->lastInsertId();
+            }
+
+            $pdo->commit();
 
             http_response_code(201);
             echo json_encode([
-                "status"         => "success",
-                "mensaje"        => "Cita médica agendada correctamente.",
-                "cita_id"        => $pdo->lastInsertId(),
-                "tipo_cita"      => $tipoCitaDetectado,
-                "numero_llegada" => $numeroLlegada,
-                "total_usd"      => number_format($totalUsd, 2, '.', '')
+                "status"               => "success",
+                "mensaje"              => "Cita médica agendada correctamente.",
+                "cita_id"              => $citaId,
+                "cxc_id"               => $cxcId,
+                "finanza_id"           => $finanzaId,
+                "tipo_cita"            => $tipoCitaDetectado,
+                "numero_llegada"       => $numeroLlegada,
+                "total_usd"            => number_format($totalUsd, 2, '.', ''),
+                "monto_contado_usd"    => number_format($montoContado, 2, '.', ''),
+                "monto_financiado_usd" => number_format($montoFinanciado, 2, '.', ''),
+                "cuotas_semanales"     => $cuotasSemanales,
+                "primera_cuota_usd"    => number_format($primeraCuotaUsd, 2, '.', ''),
+                "fecha_minima_cita"    => $fechaMinimaStr
             ], JSON_UNESCAPED_UNICODE);
 
         } catch (Exception $e) {
+            if (isset($pdo) && $pdo instanceof PDO && $pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             http_response_code(500);
             echo json_encode(["status" => "error", "mensaje" => $e->getMessage()], JSON_UNESCAPED_UNICODE);
         }
