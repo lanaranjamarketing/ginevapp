@@ -286,8 +286,10 @@ try {
             `fecha_credito` date DEFAULT NULL,
             `descripcion` varchar(255) NOT NULL,
             `fecha_vencimiento` date NOT NULL,
+            `cuotas_semanales` int(3) NOT NULL DEFAULT 1,
             `cantidad_cuotas` int(3) NOT NULL DEFAULT 1,
             `frecuencia_cuotas` varchar(20) NOT NULL DEFAULT 'semanal',
+            `monto_cuota` decimal(10,2) NOT NULL DEFAULT 0.00,
             `debe` decimal(10,2) NOT NULL DEFAULT 0.00,
             `haber` decimal(10,2) NOT NULL DEFAULT 0.00,
             `saldo` decimal(10,2) NOT NULL DEFAULT 0.00,
@@ -379,10 +381,19 @@ try {
         }
     }
 
-    // Asegurar columna fecha_credito en gm_cuentas_por_cobrar si ya existía previamente
-    $stmtColCredito = $pdo->query("SHOW COLUMNS FROM `gm_cuentas_por_cobrar` LIKE 'fecha_credito'");
-    if ($stmtColCredito && !$stmtColCredito->fetch()) {
-        $pdo->exec("ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `fecha_credito` date DEFAULT NULL AFTER `fecha`");
+    // Asegurar columnas en gm_cuentas_por_cobrar si ya existía previamente
+    $colsCxc = [
+        'fecha_credito'     => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `fecha_credito` date DEFAULT NULL AFTER `fecha`",
+        'cuotas_semanales'  => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `cuotas_semanales` int(3) NOT NULL DEFAULT 1 AFTER `fecha_vencimiento`",
+        'cantidad_cuotas'   => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `cantidad_cuotas` int(3) NOT NULL DEFAULT 1 AFTER `cuotas_semanales`",
+        'frecuencia_cuotas' => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `frecuencia_cuotas` varchar(20) NOT NULL DEFAULT 'semanal' AFTER `cantidad_cuotas`",
+        'monto_cuota'       => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `monto_cuota` decimal(10,2) NOT NULL DEFAULT 0.00 AFTER `frecuencia_cuotas`",
+    ];
+    foreach ($colsCxc as $col => $alterSql) {
+        $chk = $pdo->query("SHOW COLUMNS FROM `gm_cuentas_por_cobrar` LIKE '$col'");
+        if ($chk && !$chk->fetch()) {
+            $pdo->exec($alterSql);
+        }
     }
 
     // Asegurar columna total_usd si la tabla gm_citas ya existía previamente
