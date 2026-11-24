@@ -120,6 +120,7 @@ class Database {
                     `cita_id` mediumint(9) DEFAULT NULL,
                     `servicio_id` mediumint(9) DEFAULT NULL,
                     `fecha` date NOT NULL,
+                    `fecha_credito` date DEFAULT NULL,
                     `descripcion` varchar(255) NOT NULL,
                     `fecha_vencimiento` date NOT NULL,
                     `cantidad_cuotas` int(3) NOT NULL DEFAULT 1,
@@ -139,6 +140,11 @@ class Database {
                     INDEX `idx_cxc_vencimiento` (`fecha_vencimiento`)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             ");
+
+            $stmtColCredito = $pdo->query("SHOW COLUMNS FROM `gm_cuentas_por_cobrar` LIKE 'fecha_credito'");
+            if ($stmtColCredito && !$stmtColCredito->fetch()) {
+                $pdo->exec("ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `fecha_credito` date DEFAULT NULL AFTER `fecha`");
+            }
         } catch (Exception $e) {
             error_log("Aviso al verificar esquema de financiamiento y cuentas por cobrar: " . $e->getMessage());
         }

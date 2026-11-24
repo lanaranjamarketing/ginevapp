@@ -283,6 +283,7 @@ try {
             `cita_id` mediumint(9) DEFAULT NULL,
             `servicio_id` mediumint(9) DEFAULT NULL,
             `fecha` date NOT NULL,
+            `fecha_credito` date DEFAULT NULL,
             `descripcion` varchar(255) NOT NULL,
             `fecha_vencimiento` date NOT NULL,
             `cantidad_cuotas` int(3) NOT NULL DEFAULT 1,
@@ -376,6 +377,12 @@ try {
         if ($chk && !$chk->fetch()) {
             $pdo->exec($alterSql);
         }
+    }
+
+    // Asegurar columna fecha_credito en gm_cuentas_por_cobrar si ya existía previamente
+    $stmtColCredito = $pdo->query("SHOW COLUMNS FROM `gm_cuentas_por_cobrar` LIKE 'fecha_credito'");
+    if ($stmtColCredito && !$stmtColCredito->fetch()) {
+        $pdo->exec("ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `fecha_credito` date DEFAULT NULL AFTER `fecha`");
     }
 
     // Asegurar columna total_usd si la tabla gm_citas ya existía previamente
