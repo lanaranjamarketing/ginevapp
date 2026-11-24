@@ -176,6 +176,8 @@ try {
             `hora_cita` time NOT NULL,
             `procedimiento` varchar(200) DEFAULT 'Consulta General',
             `total_usd` decimal(10,2) NOT NULL DEFAULT 0.00,
+            `es_financiado` tinyint(1) NOT NULL DEFAULT 0,
+            `monto_financiado_usd` decimal(10,2) NOT NULL DEFAULT 0.00,
             `estado_cita` varchar(30) NOT NULL DEFAULT 'reservada',
             `tipo_cita` varchar(50) DEFAULT 'Hora Programada',
             `numero_llegada` int(5) DEFAULT 0,
@@ -282,10 +284,12 @@ try {
             `paciente_id` bigint(20) NOT NULL,
             `cita_id` mediumint(9) DEFAULT NULL,
             `servicio_id` mediumint(9) DEFAULT NULL,
+            `finanza_id` mediumint(9) DEFAULT NULL,
             `fecha` date NOT NULL,
             `fecha_credito` date DEFAULT NULL,
-            `descripcion` varchar(255) NOT NULL,
+            `descripcion` varchar(255) NOT NULL DEFAULT '',
             `concepto` varchar(255) DEFAULT NULL,
+            `observaciones` text DEFAULT NULL,
             `fecha_vencimiento` date NOT NULL,
             `cuotas_semanales` int(3) NOT NULL DEFAULT 1,
             `cantidad_cuotas` int(3) NOT NULL DEFAULT 1,
@@ -301,12 +305,18 @@ try {
             `debe` decimal(10,2) NOT NULL DEFAULT 0.00,
             `haber` decimal(10,2) NOT NULL DEFAULT 0.00,
             `saldo` decimal(10,2) NOT NULL DEFAULT 0.00,
+            `debe_usd` decimal(10,2) NOT NULL DEFAULT 0.00,
+            `haber_usd` decimal(10,2) NOT NULL DEFAULT 0.00,
+            `saldo_usd` decimal(10,2) NOT NULL DEFAULT 0.00,
             `debe_bs` decimal(12,2) NOT NULL DEFAULT 0.00,
             `haber_bs` decimal(12,2) NOT NULL DEFAULT 0.00,
             `saldo_bs` decimal(12,2) NOT NULL DEFAULT 0.00,
             `tasa_bcv` decimal(10,4) NOT NULL DEFAULT 1.0000,
             `estado` varchar(20) NOT NULL DEFAULT 'pendiente',
+            `estatus` varchar(20) NOT NULL DEFAULT 'pendiente',
+            `url_pdf` varchar(500) DEFAULT NULL,
             `fecha_creacion` datetime DEFAULT CURRENT_TIMESTAMP,
+            `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (`id`),
             INDEX `idx_cxc_medico_fecha` (`medico_id`, `fecha`),
             INDEX `idx_cxc_paciente` (`paciente_id`),
@@ -389,10 +399,12 @@ try {
         }
     }
 
-    // Asegurar columnas en gm_cuentas_por_cobrar si ya existía previamente
+    // Asegurar TODAS las columnas posibles en gm_cuentas_por_cobrar
     $colsCxc = [
+        'finanza_id'          => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `finanza_id` mediumint(9) DEFAULT NULL AFTER `servicio_id`",
         'fecha_credito'       => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `fecha_credito` date DEFAULT NULL AFTER `fecha`",
         'concepto'            => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `concepto` varchar(255) DEFAULT NULL AFTER `descripcion`",
+        'observaciones'       => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `observaciones` text DEFAULT NULL AFTER `concepto`",
         'cuotas_semanales'    => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `cuotas_semanales` int(3) NOT NULL DEFAULT 1 AFTER `fecha_vencimiento`",
         'cantidad_cuotas'     => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `cantidad_cuotas` int(3) NOT NULL DEFAULT 1 AFTER `cuotas_semanales`",
         'cuotas_pagadas'      => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `cuotas_pagadas` int(3) NOT NULL DEFAULT 0 AFTER `cantidad_cuotas`",
@@ -404,6 +416,12 @@ try {
         'monto_total_bs'      => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `monto_total_bs` decimal(12,2) NOT NULL DEFAULT 0.00 AFTER `monto_total_usd`",
         'saldo_pendiente_usd' => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `saldo_pendiente_usd` decimal(10,2) NOT NULL DEFAULT 0.00 AFTER `monto_total_bs`",
         'saldo_pendiente_bs'  => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `saldo_pendiente_bs` decimal(12,2) NOT NULL DEFAULT 0.00 AFTER `saldo_pendiente_usd`",
+        'debe_usd'            => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `debe_usd` decimal(10,2) NOT NULL DEFAULT 0.00 AFTER `saldo`",
+        'haber_usd'           => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `haber_usd` decimal(10,2) NOT NULL DEFAULT 0.00 AFTER `debe_usd`",
+        'saldo_usd'           => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `saldo_usd` decimal(10,2) NOT NULL DEFAULT 0.00 AFTER `haber_usd`",
+        'estatus'             => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `estatus` varchar(20) NOT NULL DEFAULT 'pendiente' AFTER `estado`",
+        'url_pdf'             => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `url_pdf` varchar(500) DEFAULT NULL AFTER `estatus`",
+        'updated_at'          => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP AFTER `fecha_creacion`",
     ];
     foreach ($colsCxc as $col => $alterSql) {
         $chk = $pdo->query("SHOW COLUMNS FROM `gm_cuentas_por_cobrar` LIKE '$col'");
@@ -412,10 +430,17 @@ try {
         }
     }
 
-    // Asegurar columna total_usd si la tabla gm_citas ya existía previamente
-    $stmtCol = $pdo->query("SHOW COLUMNS FROM `gm_citas` LIKE 'total_usd'");
-    if ($stmtCol && !$stmtCol->fetch()) {
-        $pdo->exec("ALTER TABLE `gm_citas` ADD COLUMN `total_usd` decimal(10,2) NOT NULL DEFAULT 0.00 AFTER `procedimiento`");
+    // Asegurar columnas en gm_citas si la tabla ya existía previamente
+    $colsCitas = [
+        'total_usd'            => "ALTER TABLE `gm_citas` ADD COLUMN `total_usd` decimal(10,2) NOT NULL DEFAULT 0.00 AFTER `procedimiento`",
+        'es_financiado'        => "ALTER TABLE `gm_citas` ADD COLUMN `es_financiado` tinyint(1) NOT NULL DEFAULT 0 AFTER `total_usd`",
+        'monto_financiado_usd' => "ALTER TABLE `gm_citas` ADD COLUMN `monto_financiado_usd` decimal(10,2) NOT NULL DEFAULT 0.00 AFTER `es_financiado`",
+    ];
+    foreach ($colsCitas as $col => $alterSql) {
+        $stmtCol = $pdo->query("SHOW COLUMNS FROM `gm_citas` LIKE '$col'");
+        if ($stmtCol && !$stmtCol->fetch()) {
+            $pdo->exec($alterSql);
+        }
     }
 
     // Asegurar columnas de facturación en gm_finanzas si la tabla ya existía previamente

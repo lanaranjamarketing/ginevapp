@@ -84,13 +84,20 @@ class Database {
         try {
             $stmtTabla = $pdo->query("SHOW TABLES LIKE 'gm_citas'");
             if ($stmtTabla && $stmtTabla->fetch()) {
-                $stmtCol = $pdo->query("SHOW COLUMNS FROM `gm_citas` LIKE 'total_usd'");
-                if ($stmtCol && !$stmtCol->fetch()) {
-                    $pdo->exec("ALTER TABLE `gm_citas` ADD COLUMN `total_usd` decimal(10,2) NOT NULL DEFAULT 0.00 AFTER `procedimiento`");
+                $columnasCitas = [
+                    'total_usd'            => "ALTER TABLE `gm_citas` ADD COLUMN `total_usd` decimal(10,2) NOT NULL DEFAULT 0.00 AFTER `procedimiento`",
+                    'es_financiado'        => "ALTER TABLE `gm_citas` ADD COLUMN `es_financiado` tinyint(1) NOT NULL DEFAULT 0 AFTER `total_usd`",
+                    'monto_financiado_usd' => "ALTER TABLE `gm_citas` ADD COLUMN `monto_financiado_usd` decimal(10,2) NOT NULL DEFAULT 0.00 AFTER `es_financiado`",
+                ];
+                foreach ($columnasCitas as $columna => $sqlAlter) {
+                    $stmtCol = $pdo->query("SHOW COLUMNS FROM `gm_citas` LIKE '{$columna}'");
+                    if ($stmtCol && !$stmtCol->fetch()) {
+                        $pdo->exec($sqlAlter);
+                    }
                 }
             }
         } catch (Exception $e) {
-            error_log("Aviso al verificar columna total_usd en gm_citas: " . $e->getMessage());
+            error_log("Aviso al verificar columnas de monto en gm_citas: " . $e->getMessage());
         }
     }
 
@@ -119,10 +126,12 @@ class Database {
                     `paciente_id` bigint(20) NOT NULL,
                     `cita_id` mediumint(9) DEFAULT NULL,
                     `servicio_id` mediumint(9) DEFAULT NULL,
+                    `finanza_id` mediumint(9) DEFAULT NULL,
                     `fecha` date NOT NULL,
                     `fecha_credito` date DEFAULT NULL,
-                    `descripcion` varchar(255) NOT NULL,
+                    `descripcion` varchar(255) NOT NULL DEFAULT '',
                     `concepto` varchar(255) DEFAULT NULL,
+                    `observaciones` text DEFAULT NULL,
                     `fecha_vencimiento` date NOT NULL,
                     `cuotas_semanales` int(3) NOT NULL DEFAULT 1,
                     `cantidad_cuotas` int(3) NOT NULL DEFAULT 1,
@@ -138,12 +147,18 @@ class Database {
                     `debe` decimal(10,2) NOT NULL DEFAULT 0.00,
                     `haber` decimal(10,2) NOT NULL DEFAULT 0.00,
                     `saldo` decimal(10,2) NOT NULL DEFAULT 0.00,
+                    `debe_usd` decimal(10,2) NOT NULL DEFAULT 0.00,
+                    `haber_usd` decimal(10,2) NOT NULL DEFAULT 0.00,
+                    `saldo_usd` decimal(10,2) NOT NULL DEFAULT 0.00,
                     `debe_bs` decimal(12,2) NOT NULL DEFAULT 0.00,
                     `haber_bs` decimal(12,2) NOT NULL DEFAULT 0.00,
                     `saldo_bs` decimal(12,2) NOT NULL DEFAULT 0.00,
                     `tasa_bcv` decimal(10,4) NOT NULL DEFAULT 1.0000,
                     `estado` varchar(20) NOT NULL DEFAULT 'pendiente',
+                    `estatus` varchar(20) NOT NULL DEFAULT 'pendiente',
+                    `url_pdf` varchar(500) DEFAULT NULL,
                     `fecha_creacion` datetime DEFAULT CURRENT_TIMESTAMP,
+                    `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     PRIMARY KEY (`id`),
                     INDEX `idx_cxc_medico_fecha` (`medico_id`, `fecha`),
                     INDEX `idx_cxc_paciente` (`paciente_id`),
@@ -152,8 +167,10 @@ class Database {
             ");
 
             $columnasCxc = [
+                'finanza_id'          => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `finanza_id` mediumint(9) DEFAULT NULL AFTER `servicio_id`",
                 'fecha_credito'       => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `fecha_credito` date DEFAULT NULL AFTER `fecha`",
                 'concepto'            => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `concepto` varchar(255) DEFAULT NULL AFTER `descripcion`",
+                'observaciones'       => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `observaciones` text DEFAULT NULL AFTER `concepto`",
                 'cuotas_semanales'    => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `cuotas_semanales` int(3) NOT NULL DEFAULT 1 AFTER `fecha_vencimiento`",
                 'cantidad_cuotas'     => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `cantidad_cuotas` int(3) NOT NULL DEFAULT 1 AFTER `cuotas_semanales`",
                 'cuotas_pagadas'      => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `cuotas_pagadas` int(3) NOT NULL DEFAULT 0 AFTER `cantidad_cuotas`",
@@ -165,6 +182,12 @@ class Database {
                 'monto_total_bs'      => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `monto_total_bs` decimal(12,2) NOT NULL DEFAULT 0.00 AFTER `monto_total_usd`",
                 'saldo_pendiente_usd' => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `saldo_pendiente_usd` decimal(10,2) NOT NULL DEFAULT 0.00 AFTER `monto_total_bs`",
                 'saldo_pendiente_bs'  => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `saldo_pendiente_bs` decimal(12,2) NOT NULL DEFAULT 0.00 AFTER `saldo_pendiente_usd`",
+                'debe_usd'            => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `debe_usd` decimal(10,2) NOT NULL DEFAULT 0.00 AFTER `saldo`",
+                'haber_usd'           => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `haber_usd` decimal(10,2) NOT NULL DEFAULT 0.00 AFTER `debe_usd`",
+                'saldo_usd'           => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `saldo_usd` decimal(10,2) NOT NULL DEFAULT 0.00 AFTER `haber_usd`",
+                'estatus'             => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `estatus` varchar(20) NOT NULL DEFAULT 'pendiente' AFTER `estado`",
+                'url_pdf'             => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `url_pdf` varchar(500) DEFAULT NULL AFTER `estatus`",
+                'updated_at'          => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP AFTER `fecha_creacion`",
             ];
 
             foreach ($columnasCxc as $columna => $sqlAlter) {
