@@ -190,8 +190,12 @@ try {
             `nombre_servicio` varchar(150) NOT NULL,
             `descripcion` text DEFAULT NULL,
             `precio` decimal(10,2) NOT NULL DEFAULT 0.00,
+            `permite_financiamiento` tinyint(1) NOT NULL DEFAULT 0,
+            `cantidad_cuotas` int(3) NOT NULL DEFAULT 1,
+            `frecuencia_cuotas` varchar(20) NOT NULL DEFAULT 'semanal',
             `tipo` varchar(20) NOT NULL DEFAULT 'servicio',
             `items_combo` text DEFAULT NULL,
+            `estado` varchar(20) DEFAULT 'activo',
             PRIMARY KEY (`id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;",
 
@@ -272,6 +276,32 @@ try {
             INDEX `idx_finanzas_medico_factura` (`medico_id`, `numero_factura`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;",
 
+        "CREATE TABLE IF NOT EXISTS `gm_cuentas_por_cobrar` (
+            `id` mediumint(9) NOT NULL AUTO_INCREMENT,
+            `medico_id` bigint(20) NOT NULL,
+            `paciente_id` bigint(20) NOT NULL,
+            `cita_id` mediumint(9) DEFAULT NULL,
+            `servicio_id` mediumint(9) DEFAULT NULL,
+            `fecha` date NOT NULL,
+            `descripcion` varchar(255) NOT NULL,
+            `fecha_vencimiento` date NOT NULL,
+            `cantidad_cuotas` int(3) NOT NULL DEFAULT 1,
+            `frecuencia_cuotas` varchar(20) NOT NULL DEFAULT 'semanal',
+            `debe` decimal(10,2) NOT NULL DEFAULT 0.00,
+            `haber` decimal(10,2) NOT NULL DEFAULT 0.00,
+            `saldo` decimal(10,2) NOT NULL DEFAULT 0.00,
+            `debe_bs` decimal(12,2) NOT NULL DEFAULT 0.00,
+            `haber_bs` decimal(12,2) NOT NULL DEFAULT 0.00,
+            `saldo_bs` decimal(12,2) NOT NULL DEFAULT 0.00,
+            `tasa_bcv` decimal(10,4) NOT NULL DEFAULT 1.0000,
+            `estado` varchar(20) NOT NULL DEFAULT 'pendiente',
+            `fecha_creacion` datetime DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`),
+            INDEX `idx_cxc_medico_fecha` (`medico_id`, `fecha`),
+            INDEX `idx_cxc_paciente` (`paciente_id`),
+            INDEX `idx_cxc_vencimiento` (`fecha_vencimiento`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;",
+
         "CREATE TABLE IF NOT EXISTS `gm_presupuestos` (
             `id` int(11) NOT NULL AUTO_INCREMENT,
             `numero_presupuesto` varchar(32) DEFAULT NULL,
@@ -332,6 +362,20 @@ try {
 
     foreach ($queries as $sql) {
         $pdo->exec($sql);
+    }
+
+    // Asegurar columnas de financiamiento en gm_servicios si ya existía previamente
+    $colsServicios = [
+        'estado'                 => "ALTER TABLE `gm_servicios` ADD COLUMN `estado` varchar(20) DEFAULT 'activo'",
+        'permite_financiamiento' => "ALTER TABLE `gm_servicios` ADD COLUMN `permite_financiamiento` tinyint(1) NOT NULL DEFAULT 0 AFTER `precio`",
+        'cantidad_cuotas'        => "ALTER TABLE `gm_servicios` ADD COLUMN `cantidad_cuotas` int(3) NOT NULL DEFAULT 1 AFTER `permite_financiamiento`",
+        'frecuencia_cuotas'      => "ALTER TABLE `gm_servicios` ADD COLUMN `frecuencia_cuotas` varchar(20) NOT NULL DEFAULT 'semanal' AFTER `cantidad_cuotas`",
+    ];
+    foreach ($colsServicios as $col => $alterSql) {
+        $chk = $pdo->query("SHOW COLUMNS FROM `gm_servicios` LIKE '$col'");
+        if ($chk && !$chk->fetch()) {
+            $pdo->exec($alterSql);
+        }
     }
 
     // Asegurar columna total_usd si la tabla gm_citas ya existía previamente
@@ -422,7 +466,7 @@ try {
 
     echo json_encode([
         "status" => "success",
-        "mensaje" => "¡Todas las tablas del sistema médico, metadatos por médico, presupuestos, facturación, exámenes y configuración dinámica fueron creados y actualizados exitosamente!"
+        "mensaje" => "¡Todas las tablas del sistema médico, financiamiento en servicios, cuentas por cobrar, presupuestos, facturación y configuración dinámica fueron creados y actualizados exitosamente!"
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
 
 } catch (PDOException $e) {
