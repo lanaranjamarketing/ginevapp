@@ -122,17 +122,17 @@ class Database {
             $pdo->exec("
                 CREATE TABLE IF NOT EXISTS `gm_cuentas_por_cobrar` (
                     `id` mediumint(9) NOT NULL AUTO_INCREMENT,
-                    `medico_id` bigint(20) NOT NULL,
-                    `paciente_id` bigint(20) NOT NULL,
+                    `medico_id` bigint(20) NOT NULL DEFAULT 0,
+                    `paciente_id` bigint(20) NOT NULL DEFAULT 0,
                     `cita_id` mediumint(9) DEFAULT NULL,
                     `servicio_id` mediumint(9) DEFAULT NULL,
                     `finanza_id` mediumint(9) DEFAULT NULL,
-                    `fecha` date NOT NULL,
+                    `fecha` date DEFAULT NULL,
                     `fecha_credito` date DEFAULT NULL,
                     `descripcion` varchar(255) NOT NULL DEFAULT '',
                     `concepto` varchar(255) DEFAULT NULL,
                     `observaciones` text DEFAULT NULL,
-                    `fecha_vencimiento` date NOT NULL,
+                    `fecha_vencimiento` date DEFAULT NULL,
                     `cuotas_semanales` int(3) NOT NULL DEFAULT 1,
                     `cantidad_cuotas` int(3) NOT NULL DEFAULT 1,
                     `cuotas_pagadas` int(3) NOT NULL DEFAULT 0,
@@ -165,6 +165,11 @@ class Database {
                     INDEX `idx_cxc_vencimiento` (`fecha_vencimiento`)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             ");
+
+            // Permitir NULL por defecto en fecha y fecha_vencimiento si la tabla ya existía sin valor por defecto
+            $pdo->exec("ALTER TABLE `gm_cuentas_por_cobrar` MODIFY COLUMN `fecha` date DEFAULT NULL");
+            $pdo->exec("ALTER TABLE `gm_cuentas_por_cobrar` MODIFY COLUMN `fecha_vencimiento` date DEFAULT NULL");
+            $pdo->exec("ALTER TABLE `gm_cuentas_por_cobrar` MODIFY COLUMN `descripcion` varchar(255) NOT NULL DEFAULT ''");
 
             $columnasCxc = [
                 'finanza_id'          => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `finanza_id` mediumint(9) DEFAULT NULL AFTER `servicio_id`",
