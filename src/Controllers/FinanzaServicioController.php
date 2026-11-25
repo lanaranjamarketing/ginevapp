@@ -6,179 +6,234 @@ use App\Documentos\FacturaPdfGenerator;
 use PDO;
 use Exception;
 
+if (file_exists(__DIR__ . '/CuentasPorCobrarController.php')) {
+    require_once __DIR__ . '/CuentasPorCobrarController.php';
+}
+if (file_exists(__DIR__ . '/PresupuestoController.php')) {
+    require_once __DIR__ . '/PresupuestoController.php';
+}
+
 class FinanzaServicioController {
 
     private static function asegurarColumnaEstado(PDO $pdo) {
-        $stmt = $pdo->prepare("
-            SELECT COUNT(*)
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = DATABASE()
-              AND TABLE_NAME = 'gm_servicios'
-              AND COLUMN_NAME = 'estado'
-        ");
-        $stmt->execute();
-        $existe = (int)$stmt->fetchColumn() > 0;
-
-        if (!$existe) {
-            $pdo->exec("ALTER TABLE gm_servicios ADD COLUMN estado VARCHAR(20) DEFAULT 'activo'");
-        }
-    }
-
-    public static function asegurarEsquemaFinanciamientoYCobros(PDO $pdo): void {
-        self::asegurarColumnaEstado($pdo);
-
-        $colsServicios = [
-            'permite_financiamiento' => "ALTER TABLE `gm_servicios` ADD COLUMN `permite_financiamiento` tinyint(1) NOT NULL DEFAULT 0 AFTER `precio`",
-            'cantidad_cuotas'        => "ALTER TABLE `gm_servicios` ADD COLUMN `cantidad_cuotas` int(3) NOT NULL DEFAULT 1 AFTER `permite_financiamiento`",
-            'frecuencia_cuotas'      => "ALTER TABLE `gm_servicios` ADD COLUMN `frecuencia_cuotas` varchar(20) NOT NULL DEFAULT 'semanal' AFTER `cantidad_cuotas`",
-        ];
-
-        foreach ($colsServicios as $col => $sqlAlter) {
+        try {
             $stmt = $pdo->prepare("
                 SELECT COUNT(*)
                 FROM INFORMATION_SCHEMA.COLUMNS
                 WHERE TABLE_SCHEMA = DATABASE()
                   AND TABLE_NAME = 'gm_servicios'
-                  AND COLUMN_NAME = :col
+                  AND COLUMN_NAME = 'estado'
             ");
-            $stmt->execute([':col' => $col]);
-            if ((int)$stmt->fetchColumn() === 0) {
-                $pdo->exec($sqlAlter);
+            $stmt->execute();
+            $existe = (int)$stmt->fetchColumn() > 0;
+
+            if (!$existe) {
+                $pdo->exec("ALTER TABLE gm_servicios ADD COLUMN estado VARCHAR(20) DEFAULT 'activo'");
             }
+        } catch (Exception $e) {
+            // Ignorar si ya existe o no tiene privilegios DDL
         }
+    }
 
-        $pdo->exec("
-            CREATE TABLE IF NOT EXISTS `gm_cuentas_por_cobrar` (
-                `id` mediumint(9) NOT NULL AUTO_INCREMENT,
-                `medico_id` bigint(20) NOT NULL,
-                `paciente_id` bigint(20) NOT NULL,
-                `cita_id` mediumint(9) DEFAULT NULL,
-                `servicio_id` mediumint(9) DEFAULT NULL,
-                `fecha` date DEFAULT NULL,
-                `fecha_credito` date DEFAULT NULL,
-                `descripcion` varchar(500) NOT NULL DEFAULT '',
-                `fecha_vencimiento` date DEFAULT NULL,
-                `cantidad_cuotas` int(3) NOT NULL DEFAULT 1,
-                `cuotas_semanales` int(3) NOT NULL DEFAULT 1,
-                `cuotas_pagadas` int(3) NOT NULL DEFAULT 0,
-                `monto_cuota_usd` decimal(12,2) NOT NULL DEFAULT 0.00,
-                `frecuencia_cuotas` varchar(20) NOT NULL DEFAULT 'semanal',
-                `debe` decimal(12,2) NOT NULL DEFAULT 0.00,
-                `debe_usd` decimal(12,2) NOT NULL DEFAULT 0.00,
-                `haber` decimal(12,2) NOT NULL DEFAULT 0.00,
-                `haber_usd` decimal(12,2) NOT NULL DEFAULT 0.00,
-                `saldo` decimal(12,2) NOT NULL DEFAULT 0.00,
-                `saldo_usd` decimal(12,2) NOT NULL DEFAULT 0.00,
-                `debe_bs` decimal(12,2) NOT NULL DEFAULT 0.00,
-                `haber_bs` decimal(12,2) NOT NULL DEFAULT 0.00,
-                `saldo_bs` decimal(12,2) NOT NULL DEFAULT 0.00,
-                `tasa_bcv` decimal(10,4) NOT NULL DEFAULT 1.0000,
-                `estado` varchar(20) NOT NULL DEFAULT 'pendiente',
-                `fecha_creacion` datetime DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (`id`),
-                INDEX `idx_cxc_medico_fecha` (`medico_id`, `fecha`),
-                INDEX `idx_cxc_paciente` (`paciente_id`),
-                INDEX `idx_cxc_vencimiento` (`fecha_vencimiento`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-        ");
+    public static function asegurarEsquemaFinanciamientoYCobros(PDO $pdo): void {
+        try {
+            self::asegurarColumnaEstado($pdo);
 
-        $colsExtraCxc = [
-            'servicio_id'       => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `servicio_id` mediumint(9) DEFAULT NULL",
-            'fecha'             => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `fecha` date DEFAULT NULL",
-            'fecha_credito'     => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `fecha_credito` date DEFAULT NULL",
-            'cantidad_cuotas'   => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `cantidad_cuotas` int(3) NOT NULL DEFAULT 1",
-            'cuotas_semanales'  => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `cuotas_semanales` int(3) NOT NULL DEFAULT 1",
-            'cuotas_pagadas'    => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `cuotas_pagadas` int(3) NOT NULL DEFAULT 0",
-            'monto_cuota_usd'   => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `monto_cuota_usd` decimal(12,2) NOT NULL DEFAULT 0.00",
-            'frecuencia_cuotas' => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `frecuencia_cuotas` varchar(20) NOT NULL DEFAULT 'semanal'",
-            'debe'              => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `debe` decimal(12,2) NOT NULL DEFAULT 0.00",
-            'debe_usd'          => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `debe_usd` decimal(12,2) NOT NULL DEFAULT 0.00",
-            'haber'             => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `haber` decimal(12,2) NOT NULL DEFAULT 0.00",
-            'haber_usd'         => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `haber_usd` decimal(12,2) NOT NULL DEFAULT 0.00",
-            'saldo'             => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `saldo` decimal(12,2) NOT NULL DEFAULT 0.00",
-            'saldo_usd'         => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `saldo_usd` decimal(12,2) NOT NULL DEFAULT 0.00",
-            'debe_bs'           => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `debe_bs` decimal(12,2) NOT NULL DEFAULT 0.00",
-            'haber_bs'          => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `haber_bs` decimal(12,2) NOT NULL DEFAULT 0.00",
-            'saldo_bs'          => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `saldo_bs` decimal(12,2) NOT NULL DEFAULT 0.00",
-            'tasa_bcv'          => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `tasa_bcv` decimal(10,4) NOT NULL DEFAULT 1.0000",
-        ];
+            $colsServicios = [
+                'permite_financiamiento' => "ALTER TABLE `gm_servicios` ADD COLUMN `permite_financiamiento` tinyint(1) NOT NULL DEFAULT 0 AFTER `precio`",
+                'cantidad_cuotas'        => "ALTER TABLE `gm_servicios` ADD COLUMN `cantidad_cuotas` int(3) NOT NULL DEFAULT 1 AFTER `permite_financiamiento`",
+                'frecuencia_cuotas'      => "ALTER TABLE `gm_servicios` ADD COLUMN `frecuencia_cuotas` varchar(20) NOT NULL DEFAULT 'semanal' AFTER `cantidad_cuotas`",
+            ];
 
-        foreach ($colsExtraCxc as $col => $alterSql) {
-            $chk = $pdo->prepare("
-                SELECT COUNT(*)
-                FROM INFORMATION_SCHEMA.COLUMNS
-                WHERE TABLE_SCHEMA = DATABASE()
-                  AND TABLE_NAME = 'gm_cuentas_por_cobrar'
-                  AND COLUMN_NAME = :c
+            foreach ($colsServicios as $col => $sqlAlter) {
+                $stmt = $pdo->prepare("
+                    SELECT COUNT(*)
+                    FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA = DATABASE()
+                      AND TABLE_NAME = 'gm_servicios'
+                      AND COLUMN_NAME = :col
+                ");
+                $stmt->execute([':col' => $col]);
+                if ((int)$stmt->fetchColumn() === 0) {
+                    $pdo->exec($sqlAlter);
+                }
+            }
+
+            $pdo->exec("
+                CREATE TABLE IF NOT EXISTS `gm_cuentas_por_cobrar` (
+                    `id` mediumint(9) NOT NULL AUTO_INCREMENT,
+                    `medico_id` bigint(20) NOT NULL,
+                    `paciente_id` bigint(20) NOT NULL,
+                    `cita_id` mediumint(9) DEFAULT NULL,
+                    `servicio_id` mediumint(9) DEFAULT NULL,
+                    `fecha` date DEFAULT NULL,
+                    `fecha_credito` date DEFAULT NULL,
+                    `descripcion` varchar(500) NOT NULL DEFAULT '',
+                    `fecha_vencimiento` date DEFAULT NULL,
+                    `cantidad_cuotas` int(3) NOT NULL DEFAULT 1,
+                    `cuotas_semanales` int(3) NOT NULL DEFAULT 1,
+                    `cuotas_pagadas` int(3) NOT NULL DEFAULT 0,
+                    `monto_cuota_usd` decimal(12,2) NOT NULL DEFAULT 0.00,
+                    `frecuencia_cuotas` varchar(20) NOT NULL DEFAULT 'semanal',
+                    `debe` decimal(12,2) NOT NULL DEFAULT 0.00,
+                    `debe_usd` decimal(12,2) NOT NULL DEFAULT 0.00,
+                    `haber` decimal(12,2) NOT NULL DEFAULT 0.00,
+                    `haber_usd` decimal(12,2) NOT NULL DEFAULT 0.00,
+                    `saldo` decimal(12,2) NOT NULL DEFAULT 0.00,
+                    `saldo_usd` decimal(12,2) NOT NULL DEFAULT 0.00,
+                    `debe_bs` decimal(12,2) NOT NULL DEFAULT 0.00,
+                    `haber_bs` decimal(12,2) NOT NULL DEFAULT 0.00,
+                    `saldo_bs` decimal(12,2) NOT NULL DEFAULT 0.00,
+                    `tasa_bcv` decimal(10,4) NOT NULL DEFAULT 1.0000,
+                    `estado` varchar(20) NOT NULL DEFAULT 'pendiente',
+                    `fecha_creacion` datetime DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (`id`),
+                    INDEX `idx_cxc_medico_fecha` (`medico_id`, `fecha`),
+                    INDEX `idx_cxc_paciente` (`paciente_id`),
+                    INDEX `idx_cxc_vencimiento` (`fecha_vencimiento`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             ");
-            $chk->execute([':c' => $col]);
-            if ((int)$chk->fetchColumn() === 0) {
-                $pdo->exec($alterSql);
-            }
-        }
 
-        $pdo->exec("
-            CREATE TABLE IF NOT EXISTS `gm_pagos_cuotas` (
-                `id` mediumint(9) NOT NULL AUTO_INCREMENT,
-                `cuenta_id` mediumint(9) NOT NULL,
-                `medico_id` bigint(20) NOT NULL,
-                `paciente_id` bigint(20) NOT NULL,
-                `cuota_numero` int(3) NOT NULL DEFAULT 1,
-                `total_cuotas` int(3) NOT NULL DEFAULT 1,
-                `fecha_pago` date NOT NULL,
-                `metodo_pago` varchar(120) NOT NULL DEFAULT '',
-                `banco_destino` varchar(150) NOT NULL DEFAULT '',
-                `referencia` varchar(100) NOT NULL DEFAULT '',
-                `moneda_pagada` varchar(10) NOT NULL DEFAULT 'USD',
-                `monto_usd` decimal(12,2) NOT NULL DEFAULT 0.00,
-                `monto_bs` decimal(12,2) NOT NULL DEFAULT 0.00,
-                `tasa_bcv` decimal(10,4) NOT NULL DEFAULT 1.0000,
-                `comprobante_url` varchar(500) NOT NULL DEFAULT '',
-                `observaciones_paciente` varchar(500) NOT NULL DEFAULT '',
-                `motivo_rechazo` varchar(500) NOT NULL DEFAULT '',
-                `estatus` varchar(25) NOT NULL DEFAULT 'por_verificar',
-                `finanza_id` mediumint(9) DEFAULT NULL,
-                `fecha_validacion` datetime DEFAULT NULL,
-                `fecha_creacion` datetime DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (`id`),
-                INDEX `idx_pc_cuenta` (`cuenta_id`),
-                INDEX `idx_pc_medico_estatus` (`medico_id`, `estatus`),
-                INDEX `idx_pc_paciente` (`paciente_id`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-        ");
+            $colsExtraCxc = [
+                'servicio_id'       => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `servicio_id` mediumint(9) DEFAULT NULL",
+                'fecha'             => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `fecha` date DEFAULT NULL",
+                'fecha_credito'     => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `fecha_credito` date DEFAULT NULL",
+                'cantidad_cuotas'   => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `cantidad_cuotas` int(3) NOT NULL DEFAULT 1",
+                'cuotas_semanales'  => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `cuotas_semanales` int(3) NOT NULL DEFAULT 1",
+                'cuotas_pagadas'    => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `cuotas_pagadas` int(3) NOT NULL DEFAULT 0",
+                'monto_cuota_usd'   => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `monto_cuota_usd` decimal(12,2) NOT NULL DEFAULT 0.00",
+                'frecuencia_cuotas' => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `frecuencia_cuotas` varchar(20) NOT NULL DEFAULT 'semanal'",
+                'debe'              => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `debe` decimal(12,2) NOT NULL DEFAULT 0.00",
+                'debe_usd'          => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `debe_usd` decimal(12,2) NOT NULL DEFAULT 0.00",
+                'haber'             => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `haber` decimal(12,2) NOT NULL DEFAULT 0.00",
+                'haber_usd'         => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `haber_usd` decimal(12,2) NOT NULL DEFAULT 0.00",
+                'saldo'             => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `saldo` decimal(12,2) NOT NULL DEFAULT 0.00",
+                'saldo_usd'         => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `saldo_usd` decimal(12,2) NOT NULL DEFAULT 0.00",
+                'debe_bs'           => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `debe_bs` decimal(12,2) NOT NULL DEFAULT 0.00",
+                'haber_bs'          => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `haber_bs` decimal(12,2) NOT NULL DEFAULT 0.00",
+                'saldo_bs'          => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `saldo_bs` decimal(12,2) NOT NULL DEFAULT 0.00",
+                'tasa_bcv'          => "ALTER TABLE `gm_cuentas_por_cobrar` ADD COLUMN `tasa_bcv` decimal(10,4) NOT NULL DEFAULT 1.0000",
+            ];
+
+            foreach ($colsExtraCxc as $col => $alterSql) {
+                $chk = $pdo->prepare("
+                    SELECT COUNT(*)
+                    FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA = DATABASE()
+                      AND TABLE_NAME = 'gm_cuentas_por_cobrar'
+                      AND COLUMN_NAME = :c
+                ");
+                $chk->execute([':c' => $col]);
+                if ((int)$chk->fetchColumn() === 0) {
+                    $pdo->exec($alterSql);
+                }
+            }
+
+            $pdo->exec("
+                CREATE TABLE IF NOT EXISTS `gm_pagos_cuotas` (
+                    `id` mediumint(9) NOT NULL AUTO_INCREMENT,
+                    `cuenta_id` mediumint(9) NOT NULL,
+                    `medico_id` bigint(20) NOT NULL,
+                    `paciente_id` bigint(20) NOT NULL,
+                    `cuota_numero` int(3) NOT NULL DEFAULT 1,
+                    `total_cuotas` int(3) NOT NULL DEFAULT 1,
+                    `fecha_pago` date NOT NULL,
+                    `metodo_pago` varchar(120) NOT NULL DEFAULT '',
+                    `banco_destino` varchar(150) NOT NULL DEFAULT '',
+                    `referencia` varchar(100) NOT NULL DEFAULT '',
+                    `moneda_pagada` varchar(10) NOT NULL DEFAULT 'USD',
+                    `monto_usd` decimal(12,2) NOT NULL DEFAULT 0.00,
+                    `monto_bs` decimal(12,2) NOT NULL DEFAULT 0.00,
+                    `tasa_bcv` decimal(10,4) NOT NULL DEFAULT 1.0000,
+                    `comprobante_url` varchar(500) NOT NULL DEFAULT '',
+                    `observaciones_paciente` varchar(500) NOT NULL DEFAULT '',
+                    `motivo_rechazo` varchar(500) NOT NULL DEFAULT '',
+                    `estatus` varchar(25) NOT NULL DEFAULT 'por_verificar',
+                    `finanza_id` mediumint(9) DEFAULT NULL,
+                    `fecha_validacion` datetime DEFAULT NULL,
+                    `fecha_creacion` datetime DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (`id`),
+                    INDEX `idx_pc_cuenta` (`cuenta_id`),
+                    INDEX `idx_pc_medico_estatus` (`medico_id`, `estatus`),
+                    INDEX `idx_pc_paciente` (`paciente_id`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            ");
+        } catch (Exception $e) {
+            // Las tablas y columnas ya existen; evitar bloquear las consultas por permisos DDL
+        }
     }
 
     // --- DELEGACIONES A CuentasPorCobrarController (mantiene compatibilidad con rutas existentes) ---
     public static function listarCuentasPorCobrar() {
+        if (!class_exists(CuentasPorCobrarController::class)) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => "Falta el archivo CuentasPorCobrarController.php en el servidor."], JSON_UNESCAPED_UNICODE);
+            return;
+        }
         CuentasPorCobrarController::listarCuentasPorCobrar();
     }
 
     public static function reportarPagoCuotaPaciente($input = null) {
+        if (!class_exists(CuentasPorCobrarController::class)) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => "Falta el archivo CuentasPorCobrarController.php en el servidor."], JSON_UNESCAPED_UNICODE);
+            return;
+        }
         CuentasPorCobrarController::reportarPagoCuotaPaciente($input);
     }
 
     public static function listarPagosReportados() {
+        if (!class_exists(CuentasPorCobrarController::class)) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => "Falta el archivo CuentasPorCobrarController.php en el servidor."], JSON_UNESCAPED_UNICODE);
+            return;
+        }
         CuentasPorCobrarController::listarPagosReportados();
     }
 
     public static function validarPagoCuota($input = null) {
+        if (!class_exists(CuentasPorCobrarController::class)) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => "Falta el archivo CuentasPorCobrarController.php en el servidor."], JSON_UNESCAPED_UNICODE);
+            return;
+        }
         CuentasPorCobrarController::validarPagoCuota($input);
     }
 
     public static function registrarAbonoCuentaPorCobrar($input = null) {
+        if (!class_exists(CuentasPorCobrarController::class)) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => "Falta el archivo CuentasPorCobrarController.php en el servidor."], JSON_UNESCAPED_UNICODE);
+            return;
+        }
         CuentasPorCobrarController::registrarAbonoCuentaPorCobrar($input);
     }
 
     // --- DELEGACIONES A PresupuestoController ---
     public static function listarPresupuestos() {
+        if (!class_exists(PresupuestoController::class)) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => "Falta el archivo PresupuestoController.php en el servidor."], JSON_UNESCAPED_UNICODE);
+            return;
+        }
         PresupuestoController::listarPresupuestos();
     }
 
     public static function aprobarYCargarPresupuesto(int $presupuestoId, $input = null) {
+        if (!class_exists(PresupuestoController::class)) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => "Falta el archivo PresupuestoController.php en el servidor."], JSON_UNESCAPED_UNICODE);
+            return;
+        }
         PresupuestoController::aprobarYCargarPresupuesto($presupuestoId, $input);
     }
 
     public static function crearPresupuesto($input = null) {
+        if (!class_exists(PresupuestoController::class)) {
+            http_response_code(500);
+            echo json_encode(["status" => "error", "mensaje" => "Falta el archivo PresupuestoController.php en el servidor."], JSON_UNESCAPED_UNICODE);
+            return;
+        }
         PresupuestoController::crearPresupuesto($input);
     }
 
