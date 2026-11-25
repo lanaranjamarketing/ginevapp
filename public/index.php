@@ -146,6 +146,9 @@ if ($uri === '/' || $uri === '/api') {
             "POST /api/finanzas",
             "GET /api/finanzas/cuentas-por-cobrar",
             "POST /api/finanzas/cuentas-por-cobrar/abono",
+            "POST /api/finanzas/cuentas-por-cobrar/reportar-pago",
+            "GET /api/finanzas/pagos-reportados",
+            "POST /api/finanzas/cuentas-por-cobrar/validar-pago",
             "POST /api/finanzas/egreso",
             "POST /api/finanzas/eliminar-egresos",
             "POST /api/finanzas/facturar",
@@ -329,6 +332,15 @@ if ($uri === '/' || $uri === '/api') {
 
 } elseif ($uri === '/api/finanzas/cuentas-por-cobrar/abono' && $method === 'POST') {
     FinanzaServicioController::registrarAbonoCuentaPorCobrar($input);
+
+} elseif ($uri === '/api/finanzas/cuentas-por-cobrar/reportar-pago' && $method === 'POST') {
+    FinanzaServicioController::reportarPagoCuotaPaciente($input);
+
+} elseif ($uri === '/api/finanzas/pagos-reportados' && $method === 'GET') {
+    FinanzaServicioController::listarPagosReportados();
+
+} elseif ($uri === '/api/finanzas/cuentas-por-cobrar/validar-pago' && $method === 'POST') {
+    FinanzaServicioController::validarPagoCuota($input);
 
 } elseif ($uri === '/api/finanzas/egreso' && $method === 'POST') {
     FinanzaServicioController::registrarEgreso($input);
