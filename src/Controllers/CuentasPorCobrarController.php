@@ -260,10 +260,10 @@ class CuentasPorCobrarController {
      */
     public static function reportarPagoCuotaPaciente($input = null) {
         try {
-            if ($input === null) {
+            if ($input === null || !is_array($input) || empty($input)) {
                 $raw = file_get_contents('php://input');
                 $decoded = json_decode($raw, true);
-                $input = is_array($decoded) ? $decoded : $_POST;
+                $input = (is_array($decoded) && !empty($decoded)) ? $decoded : $_POST;
             }
 
             $cuentaId   = (int)($input['cuenta_id'] ?? 0);
@@ -499,7 +499,6 @@ class CuentasPorCobrarController {
                 ?? 'aprobar'
             )));
 
-            // Normalizar variantes ('aprobado' -> 'aprobar', 'rechazado' -> 'rechazar')
             if (in_array($accionRaw, ['aprobar', 'aprobado', 'approve', 'validar', 'validado', '1', 'true'], true)) {
                 $accion = 'aprobar';
             } elseif (in_array($accionRaw, ['rechazar', 'rechazado', 'reject', 'denegar', '0', 'false'], true)) {
@@ -520,6 +519,49 @@ class CuentasPorCobrarController {
                 echo json_encode([
                     "status"  => "error",
                     "mensaje" => "Parámetros inválidos para validar el pago."
+                ], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            $pdo = Database::conectar();
+            FinanzaServicioController::asegurarEsquemaFinanciamientoYCobros($pdo);
+            $pdo->beginTransaction();
+
+            $stmtRep = $pdo->prepare("SELECT * FROM gm_pagos_cuotas WHERE id = :id LIMIT 1 FOR UPDATE");
+            $stmtRep->execute([':id' => $reporteId]);
+            $rep = $stmtRep->fetch(PDO::FETCH_ASSOC);
+
+            if (!$rep) {
+                $pdo->rollBack();
+                http_response_code(404);
+                echo json_encode(["status" => "error", "mensaje" => "Reporte de pago no encontrado."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            if (($rep['estatus'] ?? '') !== 'por_verificar') {
+                $pdo->rollBack();
+                http_response_code(400);
+                echo json_encode(["status" => "error", "mensaje" => "Este pago ya fue procesado anteriormente ({$rep['estatus']})."], JSON_UNESCAPED_UNICODE);
+                return;
+            }
+
+            if ($accion === 'rechazar') {
+                $updRech = $pdo->prepare("
+                    UPDATE gm_pagos_cuotas
+                    SET estatus = 'rechazado',
+                        motivo_rechazo = :motivo,
+                        fecha_validacion = NOW()
+                    WHERE id = :id
+                ");
+                $updRech->execute([
+                    ':motivo' => $motivo !== '' ? $motivo : 'Comprobante no verificado',
+                    ':id'     => $reporteId
+                ]);
+                $pdo->commit();
+
+                echo json_encode([
+                    "status"  => "success",
+                    "mensaje" => "Pago rechazado. El paciente podrá reportar nuevamente la cuota #{$rep['cuota_numero']}."
                 ], JSON_UNESCAPED_UNICODE);
                 return;
             }
@@ -636,7 +678,7 @@ class CuentasPorCobrarController {
      */
     public static function registrarAbonoCuentaPorCobrar($input = null) {
         try {
-            if ($input === null) {
+            if ($input === null || !is_array($input) || empty($input)) {
                 $input = json_decode(file_get_contents('php://input'), true) ?: [];
             }
 
