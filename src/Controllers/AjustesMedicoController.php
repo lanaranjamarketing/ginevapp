@@ -74,6 +74,10 @@ class AjustesMedicoController {
         return $default;
     }
 
+    private static function soloDigitos($valor): string {
+        return preg_replace('/\D/', '', (string)$valor);
+    }
+
     /**
      * GET /api/medico/ajustes?medico_id=X
      */
@@ -91,7 +95,10 @@ class AjustesMedicoController {
 
             $stmtPerf = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE user_id = ? OR id = ? LIMIT 1");
             $stmtPerf->execute([$idParam, $idParam]);
-            $perfilBase = $stmtPerf->fetch(PDO::FETCH_ASSOC) ?: [];
+            $perfilBase = $stmtPerf->fetch(PDO::FETCH_ASSOC);
+            if (!$perfilBase) {
+                $perfilBase = [];
+            }
 
             $idsInfo = self::resolverIdsMedico($pdo, $idParam);
             $realMedicoId = $idsInfo['principal'];
@@ -102,8 +109,8 @@ class AjustesMedicoController {
 
             $metas = self::obtenerMeta($pdo, $todosIds);
 
-            // Redes sociales
-            $redesRaw = json_decode($perfilBase['redes_sociales'] ?? ($metas['redes_sociales_lista'] ?? '[]'), true);
+            $redesFuente = $perfilBase['redes_sociales'] ?? ($metas['redes_sociales_lista'] ?? '[]');
+            $redesRaw = json_decode($redesFuente, true);
             $redesLista = [];
             if (is_array($redesRaw)) {
                 foreach ($redesRaw as $r) {
@@ -116,7 +123,6 @@ class AjustesMedicoController {
                 }
             }
 
-            // Sedes
             $sedesRaw = json_decode($metas['sedes_multiples'] ?? '[]', true);
             $sedes = [];
             if (is_array($sedesRaw)) {
@@ -135,7 +141,6 @@ class AjustesMedicoController {
                 }
             }
 
-            // Métodos de cobro / Datos bancarios
             $metodosRaw = json_decode($metas['metodos_cobro'] ?? '[]', true);
             $metodosCobro = [];
             if (is_array($metodosRaw)) {
@@ -153,7 +158,6 @@ class AjustesMedicoController {
                 }
             }
 
-            // Normalizar avatar
             $avatarUrl = $metas['avatar_url'] ?? '';
             if (!empty($avatarUrl) && strpos($avatarUrl, '/uploads/avatars/') !== false) {
                 $archivoAvatar = basename(parse_url($avatarUrl, PHP_URL_PATH));
@@ -193,7 +197,6 @@ class AjustesMedicoController {
                 'metodos_cobro'             => $metodosCobro
             ]);
 
-            // Consultar TODOS los calendarios asociados a cualquiera de los IDs del médico (sin borrar ni filtrar)
             $placeholdersCal = implode(',', array_fill(0, count($todosIds), '?'));
             $stmtCal = $pdo->prepare("SELECT * FROM gm_calendarios WHERE medico_id IN ($placeholdersCal) ORDER BY id DESC");
             $stmtCal->execute($todosIds);
@@ -204,7 +207,6 @@ class AjustesMedicoController {
                 $calendarios[] = $cal;
             }
 
-            // Asistentes vinculados
             $placeholdersAsis = implode(',', array_fill(0, count($todosIds), '?'));
             $stmtAsis = $pdo->prepare("
                 SELECT DISTINCT u.* FROM gm_usuarios_extendidos u
@@ -276,7 +278,7 @@ class AjustesMedicoController {
                 $errCode = $_FILES['avatar']['error'] ?? -1;
                 ob_end_clean();
                 http_response_code(400);
-                echo json_encode(["status" => "error", "mensaje" => "Error al recibir archivo (código $errCode). Verifica el tamaño máximo."], JSON_UNESCAPED_UNICODE);
+                echo json_encode(["status" => "error", "mensaje" => "Error al recibir archivo (código $errCode)."], JSON_UNESCAPED_UNICODE);
                 return;
             }
 
@@ -376,7 +378,7 @@ class AjustesMedicoController {
     }
 
     /**
-     * POST /api/medico/perfil (Actualiza gm_usuarios_extendidos + gm_medico_meta por sección)
+     * POST /api/medico/perfil
      */
     public static function guardarPerfil() {
         try {
@@ -477,7 +479,7 @@ class AjustesMedicoController {
 
                 case 'fiscales':
                     $rifTipo = trim($input['rif_tipo'] ?? 'V');
-                    $rifNum  = trim($input['rif_num'] ?? '');
+                    $rifNum  = self::soloDigitos($input['rif_num'] ?? '');
                     $pais    = trim($input['pais_fiscal'] ?? 'Venezuela');
                     $estado  = trim($input['estado_fiscal'] ?? '');
                     $dir     = trim($input['direccion_fiscal'] ?? '');
@@ -525,9 +527,9 @@ class AjustesMedicoController {
                             $tipo         = trim($m['tipo'] ?? 'pago_movil');
                             $banco        = trim($m['banco'] ?? '');
                             $cedTipo      = trim($m['cedula_tipo'] ?? 'V');
-                            $cedula       = preg_replace('/[^0-9]/', '', (string)($m['cedula'] ?? ''));
-                            $telefono     = preg_replace('/[^0-9]/', '', (string)($m['telefono'] ?? ''));
-                            $numeroCuenta = preg_replace('/[^0-9]/', '', (string)($m['numero_cuenta'] ?? ''));
+                            $cedula       = self::soloDigitos($m['cedula'] ?? '');
+                            $telefono     = self::soloDigitos($m['telefono'] ?? '');
+                            $numeroCuenta = self::soloDigitos($m['numero_cuenta'] ?? '');
 
                             if ($banco !== '' && $cedula !== '') {
                                 $metodosLimpios[] = [
@@ -587,11 +589,14 @@ class AjustesMedicoController {
     }
 
     /**
-     * POST /api/medico/calendarios (Crea o actualiza sin borrar los existentes)
+     * POST /api/medico/calendarios
      */
     public static function guardarCalendario() {
         try {
-            $input = json_decode(file_get_contents('php://input'), true) ?: [];
+            $input = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($input)) {
+                $input = [];
+            }
             $idParam = intval($input['medico_id'] ?? 0);
             $calId   = intval($input['id'] ?? 0);
 
@@ -705,7 +710,10 @@ class AjustesMedicoController {
      */
     public static function crearAsistente() {
         try {
-            $input = json_decode(file_get_contents('php://input'), true) ?: [];
+            $input = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($input)) {
+                $input = [];
+            }
             $idParam  = intval($input['medico_id'] ?? 0);
             $nombre   = trim($input['nombre'] ?? '');
             $apellido = trim($input['apellido'] ?? '');
