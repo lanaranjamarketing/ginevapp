@@ -7,8 +7,7 @@ use Exception;
 
 class AjustesMedicoController {
 
-    private static function asegurarTablasAuxiliares(PDO $pdo) {
-        $pdo->exec("CREATE TABLE IF NOT EXISTS gm_medico_meta (
+    private static function asegurarTablasAuxiliares(PDO $pdo) {$pdo->exec("CREATE TABLE IF NOT EXISTS gm_medico_meta (
             id INT AUTO_INCREMENT PRIMARY KEY,
             medico_id INT NOT NULL,
             meta_key VARCHAR(100) NOT NULL,
@@ -18,38 +17,35 @@ class AjustesMedicoController {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
     }
 
-    private static function resolverMedicoId(PDO $pdo, int $idRecibido): int {
+    private static function resolverMedicoId(PDO $pdo, int$idRecibido): int {
         if ($idRecibido <= 0) return 0;
-        $stmt = $pdo->prepare("SELECT id, user_id FROM gm_usuarios_extendidos WHERE user_id = ? OR id = ? LIMIT 1");
-        $stmt->execute([$idRecibido, $idRecibido]);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $stmt =$pdo->prepare("SELECT id, user_id FROM gm_usuarios_extendidos WHERE user_id = ? OR id = ? LIMIT 1");
+        $stmt->execute([$idRecibido,$idRecibido]);
+        $row =$stmt->fetch(PDO::FETCH_ASSOC);
         if ($row && !empty($row['user_id'])) {
             return intval($row['user_id']);
         }
         return $idRecibido;
     }
 
-    private static function obtenerMeta(PDO $pdo, int $medicoId): array {
-        $stmt = $pdo->prepare("SELECT meta_key, meta_value FROM gm_medico_meta WHERE medico_id = ?");
-        $stmt->execute([$medicoId]);
-        $metas = [];
-        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-            $metas[$row['meta_key']] = $row['meta_value'];
+    private static function obtenerMeta(PDO $pdo, int$medicoId): array {
+        $stmt =$pdo->prepare("SELECT meta_key, meta_value FROM gm_medico_meta WHERE medico_id = ?");
+        $stmt->execute([$medicoId]);$metas = [];
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {$metas[$row['meta_key']] =$row['meta_value'];
         }
         return $metas;
     }
 
-    private static function guardarMeta(PDO $pdo, int $medicoId, string $key, $value) {
-        $stmt = $pdo->prepare("INSERT INTO gm_medico_meta (medico_id, meta_key, meta_value)
+    private static function guardarMeta(PDO $pdo, int$medicoId, string $key,$value) {
+        $stmt =$pdo->prepare("INSERT INTO gm_medico_meta (medico_id, meta_key, meta_value)
                                VALUES (?, ?, ?)
                                ON DUPLICATE KEY UPDATE meta_value = VALUES(meta_value)");
-        $stmt->execute([$medicoId, $key, $value]);
+        $stmt->execute([$medicoId, $key,$value]);
     }
 
-    private static function primerEnteroPositivo(array $fuente, array $claves, int $default = 1): int {
-        foreach ($claves as $k) {
-            if (isset($fuente[$k]) && $fuente[$k] !== '' && $fuente[$k] !== null) {
-                $val = intval($fuente[$k]);
+    private static function primerEnteroPositivo(array $fuente, array $claves, int$default = 1): int {
+        foreach ($claves as$k) {
+            if (isset($fuente[$k]) &&$fuente[$k] !== '' &&$fuente[$k] !== null) {$val = intval($fuente[$k]);
                 if ($val >= 1) {
                     return $val;
                 }
@@ -73,23 +69,18 @@ class AjustesMedicoController {
             $pdo = Database::conectar();
             self::asegurarTablasAuxiliares($pdo);
 
-            $stmtPerf = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE user_id = ? OR id = ? LIMIT 1");
-            $stmtPerf->execute([$idParam, $idParam]);
-            $perfilBase = $stmtPerf->fetch(PDO::FETCH_ASSOC) ?: [];
-            $realMedicoId = self::resolverMedicoId($pdo, $idParam);
+            $stmtPerf =$pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE user_id = ? OR id = ? LIMIT 1");
+            $stmtPerf->execute([$idParam, $idParam]);$perfilBase = $stmtPerf->fetch(PDO::FETCH_ASSOC) ?: [];$realMedicoId = self::resolverMedicoId($pdo,$idParam);
 
-            $stmtEsp = $pdo->query("SELECT id, nombre, slug FROM gm_especialidades ORDER BY nombre ASC");
+            $stmtEsp =$pdo->query("SELECT id, nombre, slug FROM gm_especialidades ORDER BY nombre ASC");
             $especialidades = $stmtEsp ? $stmtEsp->fetchAll(PDO::FETCH_ASSOC) : [];
 
-            $metas = self::obtenerMeta($pdo, $realMedicoId);
+            $metas = self::obtenerMeta($pdo,$realMedicoId);
 
-            // Priorizar columnas de gm_usuarios_extendidos con respaldo en gm_medico_meta
-            $redesRaw = json_decode($perfilBase['redes_sociales'] ?? ($metas['redes_sociales_lista'] ?? '[]'), true);
-            $redesLista = [];
+            $redesRaw = json_decode($perfilBase['redes_sociales'] ?? ($metas['redes_sociales_lista'] ?? '[]'), true);$redesLista = [];
             if (is_array($redesRaw)) {
-                foreach ($redesRaw as $r) {
-                    if (is_array($r) && !empty($r['red'])) {
-                        $redesLista[] = [
+                foreach ($redesRaw as$r) {
+                    if (is_array($r) && !empty($r['red'])) {$redesLista[] = [
                             'red'     => $r['red'],
                             'usuario' => $r['usuario'] ?? ''
                         ];
@@ -97,14 +88,12 @@ class AjustesMedicoController {
                 }
             }
 
-            $sedesRaw = json_decode($metas['sedes_multiples'] ?? '[]', true);
-            $sedes = [];
+            $sedesRaw = json_decode($metas['sedes_multiples'] ?? '[]', true);$sedes = [];
             if (is_array($sedesRaw)) {
-                foreach ($sedesRaw as $s) {
+                foreach ($sedesRaw as$s) {
                     if (is_string($s)) {
-                        $sedes[] = ['pais' => 'Venezuela', 'estado' => '', 'direccion' => $s, 'lat' => '', 'lng' => ''];
-                    } elseif (is_array($s)) {
-                        $sedes[] = [
+                        $sedes[] = ['pais' => 'Venezuela', 'estado' => '', 'direccion' =>$s, 'lat' => '', 'lng' => ''];
+                    } elseif (is_array($s)) {$sedes[] = [
                             'pais'      => $s['pais'] ?? 'Venezuela',
                             'estado'    => $s['estado'] ?? '',
                             'direccion' => $s['direccion'] ?? '',
@@ -115,13 +104,25 @@ class AjustesMedicoController {
                 }
             }
 
-            // Normalizar avatar_url si quedó guardado con la ruta antigua /uploads/avatars/
-            $avatarUrl = $metas['avatar_url'] ?? '';
+            $metodosRaw = json_decode($metas['metodos_cobro'] ?? '[]', true);$metodosCobro = [];
+            if (is_array($metodosRaw)) {
+                foreach ($metodosRaw as$m) {
+                    if (is_array($m) && !empty($m['banco'])) {$metodosCobro[] = [
+                            'tipo'        => $m['tipo'] ?? 'pago_movil',
+                            'banco'       => $m['banco'] ?? '',
+                            'cedula_tipo' => $m['cedula_tipo'] ?? 'V',
+                            'cedula'      => $m['cedula'] ?? '',
+                            'telefono'    => $m['telefono'] ?? '',
+                        ];
+                    }
+                }
+            }
+
+            $avatarUrl =$metas['avatar_url'] ?? '';
             if (!empty($avatarUrl) && strpos($avatarUrl, '/uploads/avatars/') !== false) {
                 $archivoAvatar = basename(parse_url($avatarUrl, PHP_URL_PATH));
-                $host = $_SERVER['HTTP_HOST'] ?? 'api.ginevapp.com';
-                if (!empty($archivoAvatar)) {
-                    $avatarUrl = "https://$host/api/medico/avatar/ver?file=$archivoAvatar";
+                $host =$_SERVER['HTTP_HOST'] ?? 'api.ginevapp.com';
+                if (!empty($archivoAvatar)) {$avatarUrl = "https://$host/api/medico/avatar/ver?file=$archivoAvatar";
                 }
             }
 
@@ -151,26 +152,24 @@ class AjustesMedicoController {
                 'numero_inicio_factura'     => $inicioFactura,
                 'inicio_presupuesto'        => $inicioPresupuesto,
                 'numero_inicio_presupuesto' => $inicioPresupuesto,
-                'sedes'                     => $sedes
+                'sedes'                     => $sedes,
+                'metodos_cobro'             => $metodosCobro
             ]);
 
-            $stmtCal = $pdo->prepare("SELECT * FROM gm_calendarios WHERE medico_id = ? ORDER BY id DESC");
-            $stmtCal->execute([$realMedicoId]);
-            $calendariosRaw = $stmtCal->fetchAll(PDO::FETCH_ASSOC);
-            $calendarios = [];
-            foreach ($calendariosRaw as $cal) {
-                $cal['dias_config'] = !empty($cal['dias_config']) ? json_decode($cal['dias_config'], true) : [];
-                $calendarios[] = $cal;
+            $stmtCal =$pdo->prepare("SELECT * FROM gm_calendarios WHERE medico_id = ? ORDER BY id DESC");
+            $stmtCal->execute([$realMedicoId]);$calendariosRaw = $stmtCal->fetchAll(PDO::FETCH_ASSOC);$calendarios = [];
+            foreach ($calendariosRaw as $cal) {$cal['dias_config'] = !empty($cal['dias_config']) ? json_decode($cal['dias_config'], true) : [];
+                $calendarios[] =$cal;
             }
 
-            $stmtAsis = $pdo->prepare("
+            $stmtAsis =$pdo->prepare("
                 SELECT u.* FROM gm_usuarios_extendidos u
                 INNER JOIN gm_medico_meta m ON m.meta_key = CONCAT('asistente_', u.user_id) AND m.medico_id = ?
                 WHERE u.rol_medico = 'gm_asistente'
                 ORDER BY u.id DESC
             ");
             $stmtAsis->execute([$realMedicoId]);
-            $asistentes = $stmtAsis->fetchAll(PDO::FETCH_ASSOC);
+            $asistentes =$stmtAsis->fetchAll(PDO::FETCH_ASSOC);
 
             echo json_encode([
                 "status" => "success",
@@ -178,7 +177,8 @@ class AjustesMedicoController {
                     "perfil"         => $perfilCompleto,
                     "especialidades" => $especialidades,
                     "calendarios"    => $calendarios,
-                    "asistentes"     => $asistentes
+                    "asistentes"     => $asistentes,
+                    "metodos_cobro"  => $metodosCobro
                 ]
             ], JSON_UNESCAPED_UNICODE);
 
@@ -189,14 +189,14 @@ class AjustesMedicoController {
     }
 
     /**
-     * GET /api/medico/avatar/ver?file=medico_X.jpg (Sirve imagen con headers CORS activos)
+     * GET /api/medico/avatar/ver?file=medico_X.jpg
      */
     public static function verAvatar() {
         @ini_set('display_errors', '0');
         if (ob_get_length()) ob_end_clean();
 
         $archivo = basename($_GET['file'] ?? '');
-        $ruta = __DIR__ . '/../../public/uploads/avatars/' . $archivo;
+        $ruta = __DIR__ . '/../../public/uploads/avatars/' .$archivo;
 
         if ($archivo !== '' && file_exists($ruta)) {
             $info = @getimagesize($ruta);
@@ -213,7 +213,7 @@ class AjustesMedicoController {
     }
 
     /**
-     * POST /api/medico/avatar (Multipart file upload hacia public/uploads/avatars/)
+     * POST /api/medico/avatar
      */
     public static function subirAvatar() {
         @ini_set('display_errors', '0');
@@ -228,15 +228,15 @@ class AjustesMedicoController {
                 return;
             }
 
-            if (!isset($_FILES['avatar']) || $_FILES['avatar']['error'] !== UPLOAD_ERR_OK) {
-                $errCode = $_FILES['avatar']['error'] ?? -1;
+            if (!isset($_FILES['avatar']) \vert{}\vert{}$_FILES['avatar']['error'] !== UPLOAD_ERR_OK) {
+                $errCode =$_FILES['avatar']['error'] ?? -1;
                 ob_end_clean();
                 http_response_code(400);
                 echo json_encode(["status" => "error", "mensaje" => "Error al recibir archivo (código $errCode). Verifica el tamaño máximo."], JSON_UNESCAPED_UNICODE);
                 return;
             }
 
-            $archivo = $_FILES['avatar'];
+            $archivo =$_FILES['avatar'];
 
             $infoImagen = @getimagesize($archivo['tmp_name']);
             if ($infoImagen === false) {
@@ -246,8 +246,7 @@ class AjustesMedicoController {
                 return;
             }
 
-            $mime = $infoImagen['mime'] ?? '';
-            $permitidos = [
+            $mime = $infoImagen['mime'] ?? '';$permitidos = [
                 'image/jpeg' => 'jpg',
                 'image/png'  => 'png',
                 'image/webp' => 'webp',
@@ -268,8 +267,7 @@ class AjustesMedicoController {
             }
 
             $pdo = Database::conectar();
-            self::asegurarTablasAuxiliares($pdo);
-            $medicoId = self::resolverMedicoId($pdo, $idParam);
+            self::asegurarTablasAuxiliares($pdo);$medicoId = self::resolverMedicoId($pdo,$idParam);
 
             $dirDestino = __DIR__ . '/../../public/uploads/avatars';
             if (!is_dir($dirDestino)) {
@@ -280,29 +278,25 @@ class AjustesMedicoController {
                 @chmod($dirDestino, 0777);
             }
 
-            $metas = self::obtenerMeta($pdo, $medicoId);
-            if (!empty($metas['avatar_url'])) {
-                $archivoViejo = '';
+            $metas = self::obtenerMeta($pdo,$medicoId);
+            if (!empty($metas['avatar_url'])) {$archivoViejo = '';
                 $queryStr = parse_url($metas['avatar_url'], PHP_URL_QUERY);
                 if ($queryStr) {
-                    parse_str($queryStr, $qParams);
+                    parse_str($queryStr,$qParams);
                     $archivoViejo = basename($qParams['file'] ?? '');
                 }
-                if (empty($archivoViejo)) {
-                    $pathPrevio = parse_url($metas['avatar_url'], PHP_URL_PATH);
-                    $archivoViejo = $pathPrevio ? basename($pathPrevio) : '';
+                if (empty($archivoViejo)) {$pathPrevio = parse_url($metas['avatar_url'], PHP_URL_PATH);$archivoViejo = $pathPrevio ? basename($pathPrevio) : '';
                 }
-                $rutaVieja = $dirDestino . '/' . $archivoViejo;
+                $rutaVieja = $dirDestino . '/' .$archivoViejo;
                 if ($archivoViejo && file_exists($rutaVieja)) {
                     @unlink($rutaVieja);
                 }
             }
 
-            $ext = $permitidos[$mime];
-            $nombreArchivo = 'medico_' . $medicoId . '_' . time() . '.' . $ext;
-            $rutaFinal = $dirDestino . '/' . $nombreArchivo;
+            $ext =$permitidos[$mime];$nombreArchivo = 'medico_' . $medicoId . '_' . time() . '.' . $ext;
+            $rutaFinal = $dirDestino . '/' .$nombreArchivo;
 
-            if (!@move_uploaded_file($archivo['tmp_name'], $rutaFinal)) {
+            if (!@move_uploaded_file($archivo['tmp_name'],$rutaFinal)) {
                 ob_end_clean();
                 http_response_code(500);
                 echo json_encode([
@@ -312,10 +306,9 @@ class AjustesMedicoController {
                 return;
             }
 
-            $host = $_SERVER['HTTP_HOST'] ?? 'api.ginevapp.com';
-            $urlPublica = "https://$host/api/medico/avatar/ver?file=$nombreArchivo";
+            $host = $_SERVER['HTTP_HOST'] ?? 'api.ginevapp.com';$urlPublica = "https://$host/api/medico/avatar/ver?file=$nombreArchivo";
 
-            self::guardarMeta($pdo, $medicoId, 'avatar_url', $urlPublica);
+            self::guardarMeta($pdo, $medicoId, 'avatar_url',$urlPublica);
 
             ob_end_clean();
             echo json_encode([
@@ -437,7 +430,6 @@ class AjustesMedicoController {
                     $estado  = trim($input['estado_fiscal'] ?? '');
                     $dir     = trim($input['direccion_fiscal'] ?? '');
 
-                    // Soporta cualquier variante de nombre enviada desde el formulario Flutter/Web
                     $inicioFactura = self::primerEnteroPositivo($input, [
                         'inicio_factura',
                         'numero_control',
@@ -470,6 +462,32 @@ class AjustesMedicoController {
                     self::guardarMeta($pdo, $medicoId, 'numero_control', (string)$inicioFactura);
                     self::guardarMeta($pdo, $medicoId, 'inicio_presupuesto', (string)$inicioPresupuesto);
                     $msg = "Datos fiscales y correlativos actualizados.";
+                    break;
+
+                case 'bancarios':
+                    $metodosLimpios = [];
+                    if (isset($input['metodos_cobro']) && is_array($input['metodos_cobro'])) {
+                        foreach ($input['metodos_cobro'] as $m) {
+                            if (!is_array($m)) continue;
+                            $tipo = trim($m['tipo'] ?? 'pago_movil');
+                            $banco = trim($m['banco'] ?? '');
+                            $cedTipo = trim($m['cedula_tipo'] ?? 'V');
+                            $cedula = trim($m['cedula'] ?? '');
+                            $telefono = trim($m['telefono'] ?? '');
+
+                            if ($banco !== '' && $cedula !== '') {
+                                $metodosLimpios[] = [
+                                    'tipo'        => ($tipo === 'transferencia') ? 'transferencia' : 'pago_movil',
+                                    'banco'       => $banco,
+                                    'cedula_tipo' => in_array($cedTipo, ['V', 'E', 'J']) ? $cedTipo : 'V',
+                                    'cedula'      => $cedula,
+                                    'telefono'    => ($tipo === 'pago_movil') ? $telefono : '',
+                                ];
+                            }
+                        }
+                    }
+                    self::guardarMeta($pdo, $medicoId, 'metodos_cobro', json_encode($metodosLimpios, JSON_UNESCAPED_UNICODE));
+                    $msg = "Métodos de cobro y datos bancarios actualizados.";
                     break;
 
                 case 'sedes':
