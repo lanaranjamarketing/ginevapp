@@ -472,59 +472,54 @@ class CuentasPorCobrarController {
      */
     public static function validarPagoCuota($input = null) {
         try {
-            if ($input === null) {
-                $input = json_decode(file_get_contents('php://input'), true) ?: [];
+            if ($input === null || !is_array($input) || empty($input)) {
+                $raw = file_get_contents('php://input');
+                $decoded = json_decode($raw, true);
+                if (is_array($decoded) && !empty($decoded)) {
+                    $input = $decoded;
+                } elseif (!empty($_POST)) {
+                    $input = $_POST;
+                } else {
+                    $input = $_GET;
+                }
             }
 
-            $reporteId = (int)($input['reporte_id'] ?? $input['id'] ?? 0);
-            $accion    = strtolower(trim((string)($input['accion'] ?? 'aprobar')));
-            $motivo    = trim((string)($input['motivo_rechazo'] ?? ''));
+            $reporteId = (int)(
+                $input['reporte_id']
+                ?? $input['pago_id']
+                ?? $input['cuota_pago_id']
+                ?? $input['id']
+                ?? 0
+            );
 
-            if ($reporteId <= 0 || !in_array($accion, ['aprobar', 'rechazar'], true)) {
+            $accionRaw = strtolower(trim((string)(
+                $input['accion']
+                ?? $input['estatus']
+                ?? $input['estado']
+                ?? 'aprobar'
+            )));
+
+            // Normalizar variantes ('aprobado' -> 'aprobar', 'rechazado' -> 'rechazar')
+            if (in_array($accionRaw, ['aprobar', 'aprobado', 'approve', 'validar', 'validado', '1', 'true'], true)) {
+                $accion = 'aprobar';
+            } elseif (in_array($accionRaw, ['rechazar', 'rechazado', 'reject', 'denegar', '0', 'false'], true)) {
+                $accion = 'rechazar';
+            } else {
+                $accion = '';
+            }
+
+            $motivo = trim((string)(
+                $input['motivo_rechazo']
+                ?? $input['motivo']
+                ?? $input['observaciones']
+                ?? ''
+            ));
+
+            if ($reporteId <= 0 || $accion === '') {
                 http_response_code(400);
-                echo json_encode(["status" => "error", "mensaje" => "Parámetros inválidos para validar el pago."], JSON_UNESCAPED_UNICODE);
-                return;
-            }
-
-            $pdo = Database::conectar();
-            FinanzaServicioController::asegurarEsquemaFinanciamientoYCobros($pdo);
-            $pdo->beginTransaction();
-
-            $stmtRep = $pdo->prepare("SELECT * FROM gm_pagos_cuotas WHERE id = :id LIMIT 1 FOR UPDATE");
-            $stmtRep->execute([':id' => $reporteId]);
-            $rep = $stmtRep->fetch(PDO::FETCH_ASSOC);
-
-            if (!$rep) {
-                $pdo->rollBack();
-                http_response_code(404);
-                echo json_encode(["status" => "error", "mensaje" => "Reporte de pago no encontrado."], JSON_UNESCAPED_UNICODE);
-                return;
-            }
-
-            if (($rep['estatus'] ?? '') !== 'por_verificar') {
-                $pdo->rollBack();
-                http_response_code(400);
-                echo json_encode(["status" => "error", "mensaje" => "Este pago ya fue procesado anteriormente ({$rep['estatus']})."], JSON_UNESCAPED_UNICODE);
-                return;
-            }
-
-            if ($accion === 'rechazar') {
-                $updRech = $pdo->prepare("
-                    UPDATE gm_pagos_cuotas
-                    SET estatus = 'rechazado',
-                        motivo_rechazo = :motivo,
-                        fecha_validacion = NOW()
-                    WHERE id = :id
-                ");
-                $updRech->execute([
-                    ':motivo' => $motivo !== '' ? $motivo : 'Comprobante no verificado',
-                    ':id'     => $reporteId
-                ]);
-                $pdo->commit();
-
                 echo json_encode([
-                    "status"  => "success",
-                    "mensaje" => "Pago rechazado. El paciente podrá reportar nuevamente la cuota #{$rep['cuota_numero']}."
+                    "status"  => "error",
+                    "mensaje" => "Parámetros inválidos para validar el pago."
                 ], JSON_UNESCAPED_UNICODE);
                 return;
             }
