@@ -591,8 +591,16 @@ class BiolinkController {
             $iniPres = intval($stmtIni->fetchColumn() ?: 1);
             $numeroPres = $iniPres + $cntExistentes;
 
-            $campos = ['medico_id', 'paciente_id', 'total_usd', 'estado'];
-            $valores = [$medicoId, $pacienteId, $totalUsd, 'pendiente'];
+            $campos = ['medico_id', 'paciente_id', 'total_usd'];
+            $valores = [$medicoId, $pacienteId, $totalUsd];
+
+            if (in_array('estado', $colsPres, true)) {
+                $campos[] = 'estado';
+                $valores[] = 'pendiente';
+            } elseif (in_array('estatus', $colsPres, true)) {
+                $campos[] = 'estatus';
+                $valores[] = 'pendiente';
+            }
 
             if (in_array('numero_presupuesto', $colsPres, true)) {
                 $campos[] = 'numero_presupuesto';
