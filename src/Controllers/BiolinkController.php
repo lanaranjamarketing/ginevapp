@@ -591,6 +591,9 @@ class BiolinkController {
             $iniPres = intval($stmtIni->fetchColumn() ?: 1);
             $numeroPres = $iniPres + $cntExistentes;
 
+            $fechaEmision     = date('Y-m-d H:i:s');
+            $fechaVencimiento = date('Y-m-d', strtotime('+3 days'));
+
             $campos = ['medico_id', 'paciente_id', 'total_usd'];
             $valores = [$medicoId, $pacienteId, $totalUsd];
 
@@ -627,7 +630,11 @@ class BiolinkController {
             }
             if (in_array('fecha_emision', $colsPres, true)) {
                 $campos[] = 'fecha_emision';
-                $valores[] = date('Y-m-d H:i:s');
+                $valores[] = $fechaEmision;
+            }
+            if (in_array('fecha_vencimiento', $colsPres, true)) {
+                $campos[] = 'fecha_vencimiento';
+                $valores[] = $fechaVencimiento;
             }
 
             $colsSql = implode(', ', $campos);
@@ -640,11 +647,12 @@ class BiolinkController {
             $pdfUrl = "https://$host/api/presupuestos/pdf?id=$presupuestoId";
 
             echo json_encode([
-                "status"         => "success",
-                "mensaje"        => "Presupuesto #$presupuestoId generado correctamente.",
-                "presupuesto_id" => $presupuestoId,
-                "paciente_id"    => $pacienteId,
-                "pdf_url"        => $pdfUrl,
+                "status"            => "success",
+                "mensaje"           => "Presupuesto #$presupuestoId generado correctamente.",
+                "presupuesto_id"    => $presupuestoId,
+                "paciente_id"       => $pacienteId,
+                "fecha_vencimiento" => $fechaVencimiento,
+                "pdf_url"           => $pdfUrl,
             ], JSON_UNESCAPED_UNICODE);
 
         } catch (Exception $e) {
