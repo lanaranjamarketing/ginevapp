@@ -62,7 +62,9 @@ require_once __DIR__ . '/../src/Controllers/HistoriaController.php';
 require_once __DIR__ . '/../src/Controllers/ArchivoController.php';
 require_once __DIR__ . '/../src/Controllers/FinanzaServicioController.php';
 require_once __DIR__ . '/../src/Controllers/AjustesMedicoController.php';
+require_once __DIR__ . '/../src/Controllers/FirmaMedicoController.php';
 
+use App\Controllers\FirmaMedicoController;
 use App\Controllers\CatalogoController;
 use App\Controllers\PacienteController;
 use App\Controllers\PacientePerfilController;
@@ -403,6 +405,17 @@ if ($uri === '/' || $uri === '/api') {
 
 } elseif ($uri === '/api/medico/asistentes' && $method === 'DELETE') {
     AjustesMedicoController::eliminarAsistente();
+
+} elseif ($uri === '/api/medico/firma' && $method === 'GET') {
+    FirmaMedicoController::obtenerFirma();
+} elseif ($uri === '/api/medico/firma/canvas' && $method === 'POST') {
+    FirmaMedicoController::guardarDesdeCanvas($input);
+} elseif ($uri === '/api/medico/firma/imagen' && $method === 'POST') {
+    FirmaMedicoController::procesarImagenes($input);
+} elseif ($uri === '/api/medico/firma/ver' && $method === 'GET') {
+    FirmaMedicoController::verFirma();
+} elseif ($uri === '/api/medico/firma' && $method === 'DELETE') {
+    FirmaMedicoController::eliminarFirma();
 
 } elseif ($uri === '/api/medico/avatar' && $method === 'POST') {
     AjustesMedicoController::subirAvatar();
