@@ -34,6 +34,14 @@ class BiolinkController {
         return $digitos;
     }
 
+    private static function formatearHora12(string $hora24): string {
+        $ts = strtotime(trim($hora24));
+        if ($ts === false) {
+            return $hora24;
+        }
+        return date('g:i a', $ts);
+    }
+
     private static function columnasTabla(PDO $pdo, string $tabla): array {
         $stmt = $pdo->query("DESCRIBE `$tabla`");
         $cols = [];
@@ -123,7 +131,7 @@ class BiolinkController {
             $ids = array_values(array_unique(array_filter([$medicoId, $rowId], fn($v) => $v > 0)));
             $placeholders = implode(',', array_fill(0, count($ids), '?'));
 
-            // Metadatos
+            // 1. Metadatos
             $stmtMeta = $pdo->prepare("SELECT meta_key, meta_value FROM gm_medico_meta WHERE medico_id IN ($placeholders)");
             $stmtMeta->execute($ids);
             $metas = [];
@@ -131,26 +139,96 @@ class BiolinkController {
                 $metas[$m['meta_key']] = $m['meta_value'];
             }
 
-            // Sedes
-            $sedesRaw = json_decode($metas['sedes_multiples'] ?? '[]', true);
-            $sedes = [];
-            if (is_array($sedesRaw)) {
-                foreach ($sedesRaw as $idx => $s) {
-                    if (is_array($s) && !empty($s['direccion'])) {
-                        $sedes[] = [
-                            'id'          => $idx + 1,
-                            'nombre_sede' => !empty($s['estado']) ? "Consultorio {$s['estado']}" : "Sede #" . ($idx + 1),
-                            'pais'        => $s['pais'] ?? 'Venezuela',
-                            'estado'      => $s['estado'] ?? '',
-                            'direccion'   => $s['direccion'] ?? '',
-                            'lat'         => $s['lat'] ?? '',
-                            'lng'         => $s['lng'] ?? '',
-                        ];
+            // 2. Calendarios y horarios por sede
+            $stmtCal = $pdo->prepare("SELECT * FROM gm_calendarios WHERE medico_id IN ($placeholders) ORDER BY id ASC");
+            $stmtCal->execute($ids);
+            $calendariosRows = $stmtCal ? $stmtCal->fetchAll(PDO::FETCH_ASSOC) : [];
+
+            $diasOrden = [
+                'Monday'    => 'Lunes',
+                'Tuesday'   => 'Martes',
+                'Wednesday' => 'Miércoles',
+                'Thursday'  => 'Jueves',
+                'Friday'    => 'Viernes',
+                'Saturday'  => 'Sábado',
+                'Sunday'    => 'Domingo',
+            ];
+
+            $horariosPorSede = [];
+            $todosLosHorarios = [];
+
+            foreach ($calendariosRows as $cal) {
+                $diasConf = json_decode($cal['dias_config'] ?? '{}', true);
+                if (!is_array($diasConf)) continue;
+
+                foreach ($diasOrden as $engKey => $espLabel) {
+                    if (!isset($diasConf[$engKey]) || !is_array($diasConf[$engKey])) continue;
+                    $info = $diasConf[$engKey];
+                    $sedeNombre = trim((string)($info['sede'] ?? ''));
+                    $hIni = self::formatearHora12((string)($info['hora_inicio'] ?? '08:00'));
+                    $hFin = self::formatearHora12((string)($info['hora_fin'] ?? '12:00'));
+                    $mod = ($info['modalidad'] ?? 'bloques') === 'orden_llegada'
+                        ? ' (Por orden de llegada)'
+                        : '';
+
+                    $textoDia = "$espLabel de $hIni a $hFin$mod";
+                    $todosLosHorarios[] = [
+                        'dia'         => $espLabel,
+                        'hora_inicio' => $hIni,
+                        'hora_fin'    => $hFin,
+                        'sede'        => $sedeNombre,
+                        'texto'       => $sedeNombre !== '' ? "$textoDia — $sedeNombre" : $textoDia,
+                    ];
+
+                    if ($sedeNombre !== '') {
+                        $claveSede = mb_strtolower($sedeNombre, 'UTF-8');
+                        if (!isset($horariosPorSede[$claveSede])) {
+                            $horariosPorSede[$claveSede] = [];
+                        }
+                        $horariosPorSede[$claveSede][] = $textoDia;
                     }
                 }
             }
 
-            // Servicios activos (detectando nombres reales de columnas)
+            // 3. Sedes enriquecidas con coordenadas y horarios del calendario
+            $sedesRaw = json_decode($metas['sedes_multiples'] ?? '[]', true);
+            $sedes = [];
+            if (is_array($sedesRaw)) {
+                foreach ($sedesRaw as $idx => $s) {
+                    if (!is_array($s) || empty($s['direccion'])) continue;
+
+                    $dir = trim((string)$s['direccion']);
+                    $claveDir = mb_strtolower($dir, 'UTF-8');
+                    $horariosSede = $horariosPorSede[$claveDir] ?? [];
+
+                    if (empty($horariosSede)) {
+                        foreach ($horariosPorSede as $k => $listaH) {
+                            if ($k !== '' && (strpos($k, $claveDir) !== false || strpos($claveDir, $k) !== false)) {
+                                $horariosSede = array_merge($horariosSede, $listaH);
+                            }
+                        }
+                    }
+
+                    $tituloSede = !empty($s['ciudad'])
+                        ? "Consultorio {$s['ciudad']}"
+                        : (!empty($s['estado']) ? "Consultorio {$s['estado']}" : "Sede #" . ($idx + 1));
+
+                    $sedes[] = [
+                        'id'            => $idx + 1,
+                        'nombre_sede'   => $tituloSede,
+                        'pais'          => $s['pais'] ?? 'Venezuela',
+                        'estado'        => $s['estado'] ?? '',
+                        'ciudad'        => $s['ciudad'] ?? '',
+                        'direccion'     => $dir,
+                        'lat'           => trim((string)($s['lat'] ?? '')),
+                        'lng'           => trim((string)($s['lng'] ?? '')),
+                        'horarios'      => array_values(array_unique($horariosSede)),
+                        'horario_texto' => implode(' • ', array_values(array_unique($horariosSede))),
+                    ];
+                }
+            }
+
+            // 4. Servicios activos
             $colsSrv = self::columnasTabla($pdo, 'gm_servicios');
             $whereEstado = in_array('estado', $colsSrv, true)
                 ? "AND (estado = 'activo' OR estado IS NULL OR estado = '')"
@@ -170,7 +248,7 @@ class BiolinkController {
                 ];
             }
 
-            // Redes sociales
+            // 5. Redes sociales
             $redesRaw = json_decode($medico['redes_sociales'] ?? ($metas['redes_sociales_lista'] ?? '[]'), true);
             $instagram = '';
             $tiktok = '';
@@ -185,7 +263,7 @@ class BiolinkController {
                 }
             }
 
-            // Avatar HTTPS
+            // 6. Avatar HTTPS
             $avatarUrl = $metas['avatar_url'] ?? '';
             if (!empty($avatarUrl) && strpos($avatarUrl, '/uploads/avatars/') !== false) {
                 $archivo = basename(parse_url($avatarUrl, PHP_URL_PATH));
@@ -213,8 +291,9 @@ class BiolinkController {
                         "sitio_web"    => $web,
                         "biolink_slug" => $metas['biolink_slug'] ?? $slug,
                     ],
-                    "sedes"     => $sedes,
-                    "servicios" => $servicios,
+                    "sedes"            => $sedes,
+                    "horarios_general" => $todosLosHorarios,
+                    "servicios"        => $servicios,
                 ]
             ], JSON_UNESCAPED_UNICODE);
 
