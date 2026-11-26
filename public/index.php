@@ -63,6 +63,7 @@ require_once __DIR__ . '/../src/Controllers/ArchivoController.php';
 require_once __DIR__ . '/../src/Controllers/FinanzaServicioController.php';
 require_once __DIR__ . '/../src/Controllers/AjustesMedicoController.php';
 require_once __DIR__ . '/../src/Controllers/FirmaMedicoController.php';
+require_once __DIR__ . '/../src/Controllers/BiolinkController.php';
 
 use App\Controllers\FirmaMedicoController;
 use App\Controllers\CatalogoController;
@@ -75,6 +76,7 @@ use App\Controllers\HistoriaController;
 use App\Controllers\ArchivoController;
 use App\Controllers\FinanzaServicioController;
 use App\Controllers\AjustesMedicoController;
+use App\Controllers\BiolinkController;
 use App\Documentos\ValidadorInformePublico;
 use App\Documentos\FacturaPdfGenerator;
 use App\Documentos\PresupuestoPdfGenerator;
@@ -107,6 +109,10 @@ if ($uri === '/' || $uri === '/api') {
             "POST /api/auth/registro-completar",
             "GET /api/catalogos",
             "GET /api/configuracion/tema",
+            "GET /api/publico/biolink",
+            "POST /api/publico/biolink/verificar-whatsapp",
+            "POST /api/publico/biolink/agendar",
+            "POST /api/publico/biolink/presupuesto",
             "GET /api/marketplace/medicos",
             "GET /api/pacientes",
             "POST /api/pacientes",
@@ -187,6 +193,18 @@ if ($uri === '/' || $uri === '/api') {
 
 } elseif ($uri === '/api/configuracion/tema' && $method === 'GET') {
     AuthController::obtenerTema();
+
+} elseif ($uri === '/api/publico/biolink' && $method === 'GET') {
+    BiolinkController::obtenerBiolink();
+
+} elseif ($uri === '/api/publico/biolink/verificar-whatsapp' && $method === 'POST') {
+    BiolinkController::verificarWhatsapp($input);
+
+} elseif ($uri === '/api/publico/biolink/agendar' && $method === 'POST') {
+    BiolinkController::agendarCita($input);
+
+} elseif ($uri === '/api/publico/biolink/presupuesto' && $method === 'POST') {
+    BiolinkController::solicitarPresupuesto($input);
 
 } elseif ($uri === '/api/marketplace/medicos' && $method === 'GET') {
     CitaController::listarMarketplace();
