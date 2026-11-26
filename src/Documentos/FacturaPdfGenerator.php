@@ -77,6 +77,22 @@ class FacturaPdfGenerator {
         return $metas;
     }
 
+    private static function obtenerFirmaMedicoUrl(array $medico, array $metas, string $baseUrl): string {
+        $raw = self::primerTextoNoVacio([
+            $medico['firma_url'] ?? '',
+            $medico['firma'] ?? '',
+            $metas['firma_url'] ?? '',
+            $metas['firma'] ?? '',
+        ]);
+        if ($raw === '') {
+            return '';
+        }
+        if (preg_match('#^(https?://|data:image/)#i', $raw)) {
+            return $raw;
+        }
+        return rtrim($baseUrl, '/') . '/' . ltrim($raw, '/');
+    }
+
     /**
      * Calcula el correlativo independiente de factura del médico:
      * Toma MAX(numero_factura) de ese mismo médico + 1 (nunca menor al inicio_factura configurado).
@@ -100,7 +116,7 @@ class FacturaPdfGenerator {
 
     /**
      * Genera la Factura digital replicando la estructura oficial con datos dinámicos del médico,
-     * especialidad real desde BD, colores del tema activo y números de Factura y Control iguales en rojo.
+     * especialidad real desde BD, firma digital individual, colores del tema activo y números en rojo.
      */
     public static function generarFacturaPdf(int $finanzaId, ?PDO $pdoExterno = null, array $temaOverride = []): array {
         $pdo = $pdoExterno ?? Database::conectar();
@@ -132,6 +148,9 @@ class FacturaPdfGenerator {
         $realMedicoId = !empty($medico['user_id']) ? (int)$medico['user_id'] : $medicoId;
 
         $metas = self::obtenerMetasMedico($pdo, $realMedicoId);
+        if (empty($metas) && $realMedicoId !== $medicoId) {
+            $metas = self::obtenerMetasMedico($pdo, $medicoId);
+        }
 
         // Prefijo Dr. / Dra. y Nombre completo
         $sexoMed = strtolower(trim((string)($medico['sexo'] ?? '')));
@@ -209,6 +228,9 @@ class FacturaPdfGenerator {
             . '&cp=' . urlencode($colorPrimario);
         $urlQrImagen = 'https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=' . urlencode($urlValidacion);
 
+        // Firma digital del médico
+        $firmaMedicoUrl = self::obtenerFirmaMedicoUrl($medico, $metas, $baseUrl);
+
         // Datos del Paciente / Cliente
         $razonSocial = trim(
             ($finanza['p_nombre'] ?? '') . ' ' .
@@ -246,6 +268,10 @@ class FacturaPdfGenerator {
 
         $concepto = trim((string)($finanza['concepto'] ?? 'HONORARIOS MÉDICOS'));
         $esc = static fn($v) => htmlspecialchars((string)($v ?? ''), ENT_QUOTES, 'UTF-8');
+
+        $firmaImgHtml = $firmaMedicoUrl !== ''
+            ? '<div class="firma-img-wrap"><img src="' . $esc($firmaMedicoUrl) . '" alt="Firma ' . $esc($tituloMedicoFirma) . '"></div>'
+            : '';
 
         $html = '<!DOCTYPE html>
 <html lang="es">
@@ -366,7 +392,9 @@ class FacturaPdfGenerator {
             vertical-align: top;
         }
         .items-body-min { height: 175px; vertical-align: top; }
-        .firma-sello { margin-top: 26px; text-align: center; color: ' . $esc($colorPrimario) . '; font-size: 11px; line-height: 1.35; }
+        .firma-sello { margin-top: 18px; text-align: center; color: ' . $esc($colorPrimario) . '; font-size: 11px; line-height: 1.35; }
+        .firma-img-wrap { margin-bottom: -4px; text-align: center; }
+        .firma-img-wrap img { max-height: 58px; max-width: 190px; object-fit: contain; display: inline-block; }
         .firma-linea { width: 240px; border-top: 1px solid ' . $esc($colorPrimario) . '; margin: 0 auto 4px auto; }
         .bottom-grid { width: 100%; border-collapse: collapse; margin-top: 10px; }
         .bottom-grid td { vertical-align: top; }
@@ -493,6 +521,7 @@ class FacturaPdfGenerator {
                         </div>
 
                         <div class="firma-sello">
+                            ' . $firmaImgHtml . '
                             <div class="firma-linea"></div>
                             <strong>' . $esc($tituloMedicoFirma) . '</strong><br>
                             ' . $esc($especialidad) . '<br>

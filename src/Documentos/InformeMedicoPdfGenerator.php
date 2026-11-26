@@ -69,8 +69,46 @@ class InformeMedicoPdfGenerator {
         return sprintf('#%02x%02x%02x', $r, $g, $b);
     }
 
+    private static function primerTextoNoVacio(array $candidatos, string $fallback = ''): string {
+        foreach ($candidatos as $val) {
+            $limpio = trim((string)($val ?? ''));
+            if ($limpio !== '') {
+                return $limpio;
+            }
+        }
+        return $fallback;
+    }
+
+    private static function obtenerMetasMedico(PDO $pdo, int $medicoId): array {
+        $metas = [];
+        try {
+            $stmt = $pdo->prepare("SELECT meta_key, meta_value FROM gm_medico_meta WHERE medico_id = ?");
+            $stmt->execute([$medicoId]);
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $metas[$row['meta_key']] = $row['meta_value'];
+            }
+        } catch (Exception $ignored) {}
+        return $metas;
+    }
+
+    private static function obtenerFirmaMedicoUrl(array $medico, array $metas, string $baseUrl): string {
+        $raw = self::primerTextoNoVacio([
+            $medico['firma_url'] ?? '',
+            $medico['firma'] ?? '',
+            $metas['firma_url'] ?? '',
+            $metas['firma'] ?? '',
+        ]);
+        if ($raw === '') {
+            return '';
+        }
+        if (preg_match('#^(https?://|data:image/)#i', $raw)) {
+            return $raw;
+        }
+        return rtrim($baseUrl, '/') . '/' . ltrim($raw, '/');
+    }
+
     /**
-     * Genera el Informe Médico Oficial en HTML/PDF con datos y paleta de colores dinámicos del médico.
+     * Genera el Informe Médico Oficial en HTML/PDF con datos, firma digital y paleta de colores dinámicos del médico.
      */
     public static function generarInformeMedicoPdf(int $historiaId, ?PDO $pdoExterno = null, array $temaOverride = []): array {
         $pdo = $pdoExterno ?? Database::conectar();
@@ -108,9 +146,15 @@ class InformeMedicoPdfGenerator {
 
         // 5. Datos 100% dinámicos del médico emisor (se adapta a cada médico que atiende)
         $medicoId = (int)$historia['medico_id'];
-        $stmtMed = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE user_id = :uid LIMIT 1");
-        $stmtMed->execute([':uid' => $medicoId]);
+        $stmtMed = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE user_id = :uid1 OR id = :uid2 LIMIT 1");
+        $stmtMed->execute([':uid1' => $medicoId, ':uid2' => $medicoId]);
         $medExt = $stmtMed->fetch(PDO::FETCH_ASSOC) ?: [];
+        $realMedicoId = !empty($medExt['user_id']) ? (int)$medExt['user_id'] : $medicoId;
+
+        $metas = self::obtenerMetasMedico($pdo, $realMedicoId);
+        if (empty($metas) && $realMedicoId !== $medicoId) {
+            $metas = self::obtenerMetasMedico($pdo, $medicoId);
+        }
 
         $medicoGenero = strtolower(trim($medExt['sexo'] ?? ''));
         $prefijoMedico = ($medicoGenero === 'femenino' || $medicoGenero === 'f') ? 'Dra.' : 'Dr.';
@@ -118,15 +162,15 @@ class InformeMedicoPdfGenerator {
         $apellidoMedico = trim($medExt['apellido'] ?? 'Tratante');
         $medicoNombreFull = trim("$prefijoMedico $nombreMedicoBase $apellidoMedico");
 
-        $medicoEspecialidad = !empty($medExt['especialidad']) ? $medExt['especialidad'] : 'Médico Cirujano';
-        $medicoUniversidad  = !empty($medExt['universidad']) ? $medExt['universidad'] : 'UCV';
-        $medicoTagline      = trim($medExt['tagline'] ?? '');
+        $medicoEspecialidad = !empty($medExt['especialidad']) ? $medExt['especialidad'] : ($metas['especialidad'] ?? 'Médico Cirujano');
+        $medicoUniversidad  = !empty($medExt['universidad']) ? $medExt['universidad'] : ($metas['universidad'] ?? 'UCV');
+        $medicoTagline      = trim($medExt['tagline'] ?? ($metas['tagline'] ?? ''));
         $medicoTelefono     = !empty($medExt['whatsapp']) ? $medExt['whatsapp'] : ($medExt['telefono'] ?? 'S/N');
-        $medicoMpps         = !empty($medExt['mpps']) ? $medExt['mpps'] : 'S/N';
-        $medicoCmm          = !empty($medExt['cmm']) ? $medExt['cmm'] : 'S/N';
+        $medicoMpps         = !empty($medExt['mpps']) ? $medExt['mpps'] : ($metas['mpps'] ?? 'S/N');
+        $medicoCmm          = !empty($medExt['cmm']) ? $medExt['cmm'] : ($metas['cmm'] ?? 'S/N');
 
-        $rifTipo = trim($medExt['rif_tipo'] ?? '');
-        $rifNum  = trim($medExt['rif_num'] ?? ($medExt['rif'] ?? ''));
+        $rifTipo = trim($medExt['rif_tipo'] ?? ($metas['rif_tipo'] ?? ''));
+        $rifNum  = trim($medExt['rif_num'] ?? ($medExt['rif'] ?? ($metas['rif_num'] ?? '')));
         if (!empty($rifNum)) {
             $medicoRif = (strpos($rifNum, '-') !== false || empty($rifTipo)) ? $rifNum : ($rifTipo . '-' . $rifNum);
         } else {
@@ -216,6 +260,9 @@ class InformeMedicoPdfGenerator {
             . '&cs=' . urlencode($colorOscuro);
         $apiQrUrl      = 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=' . urlencode($urlValidacion);
 
+        // Firma digital del médico
+        $firmaMedicoUrl = self::obtenerFirmaMedicoUrl($medExt, $metas, $baseUrl);
+
         // Lista de exámenes dinámicos
         $htmlExamenes = '';
         if (!empty($examenes)) {
@@ -234,6 +281,11 @@ class InformeMedicoPdfGenerator {
         }
 
         $esc = static fn($v) => htmlspecialchars((string)($v ?? ''), ENT_QUOTES, 'UTF-8');
+
+        $firmaImgHtml = $firmaMedicoUrl !== ''
+            ? '<div class="signature-img-wrap"><img src="' . $esc($firmaMedicoUrl) . '" alt="Firma ' . $esc($medicoNombreFull) . '"></div>'
+            : '';
+        $signatureLineTop = $firmaMedicoUrl !== '' ? '0px' : '40px';
 
         // 6. Plantilla HTML Corporativa con Variables CSS Dinámicas
         $htmlContent = '<!DOCTYPE html>
@@ -379,7 +431,7 @@ class InformeMedicoPdfGenerator {
         border-radius: 4px;
     }
     .footer-signature {
-        margin-top: 40px;
+        margin-top: 32px;
         display: flex;
         justify-content: space-between;
         align-items: flex-end;
@@ -388,9 +440,19 @@ class InformeMedicoPdfGenerator {
         text-align: center;
         width: 250px;
     }
+    .signature-img-wrap {
+        margin-bottom: -4px;
+        text-align: center;
+    }
+    .signature-img-wrap img {
+        max-height: 58px;
+        max-width: 190px;
+        object-fit: contain;
+        display: inline-block;
+    }
     .signature-line {
         border-top: 1px solid var(--primary-dark);
-        margin-top: 40px;
+        margin-top: ' . $signatureLineTop . ';
         padding-top: 5px;
         font-size: 11px;
         font-weight: bold;
@@ -483,6 +545,7 @@ class InformeMedicoPdfGenerator {
             Este documento es una copia auténtica emitida digitalmente. Puede verificar su autenticidad escaneando el código QR con cualquier dispositivo móvil.
         </div>
         <div class="signature-box">
+            ' . $firmaImgHtml . '
             <div class="signature-line">
                 ' . $esc($medicoNombreFull) . '<br>
                 ' . $esc($medicoEspecialidad) . '<br>

@@ -77,6 +77,22 @@ class PresupuestoPdfGenerator {
         return $metas;
     }
 
+    private static function obtenerFirmaMedicoUrl(array $medico, array $metas, string $baseUrl): string {
+        $raw = self::primerTextoNoVacio([
+            $medico['firma_url'] ?? '',
+            $medico['firma'] ?? '',
+            $metas['firma_url'] ?? '',
+            $metas['firma'] ?? '',
+        ]);
+        if ($raw === '') {
+            return '';
+        }
+        if (preg_match('#^(https?://|data:image/)#i', $raw)) {
+            return $raw;
+        }
+        return rtrim($baseUrl, '/') . '/' . ltrim($raw, '/');
+    }
+
     private static function obtenerSiguienteNumeroPresupuestoMedico(PDO $pdo, int $medicoId, array $metas): string {
         $inicioConfigurado = max(1, intval($metas['inicio_presupuesto'] ?? 1));
 
@@ -133,7 +149,8 @@ class PresupuestoPdfGenerator {
     }
 
     /**
-     * Genera el documento HTML/PDF del Presupuesto Médico dinámicamente desde la BD.
+     * Genera el documento HTML/PDF del Presupuesto Médico dinámicamente desde la BD
+     * incluyendo la firma digital individual del médico emisor.
      */
     public static function generarPresupuestoPdf(int $presupuestoId, ?PDO $pdoExterno = null, array $temaOverride = []): array {
         $pdo = $pdoExterno ?? Database::conectar();
@@ -165,6 +182,9 @@ class PresupuestoPdfGenerator {
         $realMedicoId = !empty($medico['user_id']) ? (int)$medico['user_id'] : $medicoId;
 
         $metas = self::obtenerMetasMedico($pdo, $realMedicoId);
+        if (empty($metas) && $realMedicoId !== $medicoId) {
+            $metas = self::obtenerMetasMedico($pdo, $medicoId);
+        }
 
         $sexoMed = strtolower(trim((string)($medico['sexo'] ?? '')));
         $prefijoDr = ($sexoMed === 'femenino' || $sexoMed === 'f') ? 'DRA.' : 'DR.';
@@ -234,6 +254,9 @@ class PresupuestoPdfGenerator {
             . '&cp=' . urlencode($colorPrimario);
         $urlQrImagen = 'https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=' . urlencode($urlValidacion);
 
+        // Firma digital del médico
+        $firmaMedicoUrl = self::obtenerFirmaMedicoUrl($medico, $metas, $baseUrl);
+
         $razonSocial = trim((string)($pres['paciente_nombre'] ?? ''));
         if ($razonSocial === '') {
             $razonSocial = trim(
@@ -275,6 +298,10 @@ class PresupuestoPdfGenerator {
 
         $obs = trim((string)($pres['observaciones'] ?? ''));
         $esc = static fn($v) => htmlspecialchars((string)($v ?? ''), ENT_QUOTES, 'UTF-8');
+
+        $firmaImgHtml = $firmaMedicoUrl !== ''
+            ? '<div class="firma-img-wrap"><img src="' . $esc($firmaMedicoUrl) . '" alt="Firma ' . $esc($tituloMedicoFirma) . '"></div>'
+            : '';
 
         $filasHtml = '';
         foreach ($items as $it) {
@@ -418,11 +445,21 @@ class PresupuestoPdfGenerator {
             vertical-align: top;
         }
         .firma-sello {
-            margin-top: 22px;
+            margin-top: 16px;
             text-align: center;
             color: ' . $esc($colorPrimario) . ';
             font-size: 11px;
             line-height: 1.35;
+        }
+        .firma-img-wrap {
+            margin-bottom: -4px;
+            text-align: center;
+        }
+        .firma-img-wrap img {
+            max-height: 58px;
+            max-width: 190px;
+            object-fit: contain;
+            display: inline-block;
         }
         .firma-linea {
             width: 240px;
@@ -584,6 +621,7 @@ class PresupuestoPdfGenerator {
                     </div>
 
                     <div class="firma-sello">
+                        ' . $firmaImgHtml . '
                         <div class="firma-linea"></div>
                         <strong>' . $esc($tituloMedicoFirma) . '</strong><br>
                         ' . $esc($especialidad) . ' &nbsp;|&nbsp; M.P.P.S.: ' . $esc($mpps) . ' &nbsp;|&nbsp; C.I.: ' . $esc($cedulaMedicoFirma) . '
