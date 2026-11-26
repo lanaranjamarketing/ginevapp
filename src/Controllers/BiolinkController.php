@@ -34,13 +34,21 @@ class BiolinkController {
         return $digitos;
     }
 
+    private static function columnasTabla(PDO $pdo, string $tabla): array {
+        $stmt = $pdo->query("DESCRIBE `$tabla`");
+        $cols = [];
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $cols[] = $row['Field'];
+        }
+        return $cols;
+    }
+
     private static function resolverMedicoPorSlugOId(PDO $pdo, string $slugOId): ?array {
         $limpio = trim($slugOId);
         if ($limpio === '') {
             return null;
         }
 
-        // 1. Buscar en gm_medico_meta por biolink_slug o slug
         $slugNorm = self::normalizarSlug($limpio);
         if ($slugNorm !== '') {
             $stmtMeta = $pdo->prepare("
@@ -60,7 +68,6 @@ class BiolinkController {
             }
         }
 
-        // 2. Buscar por ID numérico directo
         if (ctype_digit($limpio)) {
             $idNum = intval($limpio);
             $stmtU = $pdo->prepare("
@@ -74,7 +81,6 @@ class BiolinkController {
             if ($u) return $u;
         }
 
-        // 3. Buscar coincidencia generada desde prefijo + nombre + apellido
         $stmtAll = $pdo->query("
             SELECT * FROM gm_usuarios_extendidos
             WHERE rol_medico IN ('gm_medico', 'medico', 'admin')
@@ -144,16 +150,25 @@ class BiolinkController {
                 }
             }
 
-            // Servicios activos
-            $stmtSrv = $pdo->prepare("
-                SELECT id, nombre, descripcion, precio_usd, tipo
-                FROM gm_servicios
-                WHERE medico_id IN ($placeholders)
-                  AND (estado = 'activo' OR estado IS NULL OR estado = '')
-                ORDER BY nombre ASC
-            ");
+            // Servicios activos (detectando nombres reales de columnas)
+            $colsSrv = self::columnasTabla($pdo, 'gm_servicios');
+            $whereEstado = in_array('estado', $colsSrv, true)
+                ? "AND (estado = 'activo' OR estado IS NULL OR estado = '')"
+                : "";
+            $stmtSrv = $pdo->prepare("SELECT * FROM gm_servicios WHERE medico_id IN ($placeholders) $whereEstado");
             $stmtSrv->execute($ids);
-            $servicios = $stmtSrv ? $stmtSrv->fetchAll(PDO::FETCH_ASSOC) : [];
+            $serviciosRaw = $stmtSrv ? $stmtSrv->fetchAll(PDO::FETCH_ASSOC) : [];
+
+            $servicios = [];
+            foreach ($serviciosRaw as $sr) {
+                $servicios[] = [
+                    'id'          => intval($sr['id'] ?? 0),
+                    'nombre'      => $sr['nombre'] ?? $sr['nombre_servicio'] ?? $sr['titulo'] ?? 'Servicio Médico',
+                    'descripcion' => $sr['descripcion'] ?? $sr['detalle'] ?? '',
+                    'precio_usd'  => $sr['precio_usd'] ?? $sr['precio'] ?? $sr['monto_usd'] ?? '0',
+                    'tipo'        => $sr['tipo'] ?? 'servicio',
+                ];
+            }
 
             // Redes sociales
             $redesRaw = json_decode($medico['redes_sociales'] ?? ($metas['redes_sociales_lista'] ?? '[]'), true);
@@ -307,12 +322,26 @@ class BiolinkController {
                 }
             }
 
-            $stmtCita = $pdo->prepare("
-                INSERT INTO gm_citas
-                (medico_id, paciente_id, fecha_cita, hora_cita, motivo_consulta, estado_cita, origen)
-                VALUES (?, ?, ?, ?, ?, 'reservada', 'biolink')
-            ");
-            $stmtCita->execute([$medicoId, $pacienteId, $fechaCita, $horaCita, $motivo]);
+            $colsCita = self::columnasTabla($pdo, 'gm_citas');
+            $campos = ['medico_id', 'paciente_id', 'fecha_cita', 'hora_cita', 'estado_cita'];
+            $valores = [$medicoId, $pacienteId, $fechaCita, $horaCita, 'reservada'];
+
+            if (in_array('motivo_consulta', $colsCita, true)) {
+                $campos[] = 'motivo_consulta';
+                $valores[] = $motivo;
+            } elseif (in_array('motivo', $colsCita, true)) {
+                $campos[] = 'motivo';
+                $valores[] = $motivo;
+            }
+            if (in_array('origen', $colsCita, true)) {
+                $campos[] = 'origen';
+                $valores[] = 'biolink';
+            }
+
+            $colsSql = implode(', ', $campos);
+            $marksSql = implode(', ', array_fill(0, count($valores), '?'));
+            $stmtCita = $pdo->prepare("INSERT INTO gm_citas ($colsSql) VALUES ($marksSql)");
+            $stmtCita->execute($valores);
 
             echo json_encode([
                 "status"  => "success",
@@ -375,27 +404,46 @@ class BiolinkController {
 
             $idsLimpios = array_values(array_filter(array_map('intval', $serviciosIds), fn($v) => $v > 0));
             $placeholders = implode(',', array_fill(0, count($idsLimpios), '?'));
-            $stmtSrv = $pdo->prepare("SELECT id, nombre, precio_usd FROM gm_servicios WHERE id IN ($placeholders)");
+            $stmtSrv = $pdo->prepare("SELECT * FROM gm_servicios WHERE id IN ($placeholders)");
             $stmtSrv->execute($idsLimpios);
-            $items = $stmtSrv->fetchAll(PDO::FETCH_ASSOC);
+            $itemsRaw = $stmtSrv->fetchAll(PDO::FETCH_ASSOC);
 
+            $items = [];
             $totalUsd = 0.0;
-            foreach ($items as $it) {
-                $totalUsd += floatval($it['precio_usd'] ?? 0);
+            foreach ($itemsRaw as $it) {
+                $precio = floatval($it['precio_usd'] ?? $it['precio'] ?? $it['monto_usd'] ?? 0);
+                $totalUsd += $precio;
+                $items[] = [
+                    'id'         => intval($it['id'] ?? 0),
+                    'nombre'     => $it['nombre'] ?? $it['nombre_servicio'] ?? $it['titulo'] ?? 'Servicio',
+                    'precio_usd' => $precio,
+                ];
             }
 
-            $stmtPres = $pdo->prepare("
-                INSERT INTO gm_presupuestos
-                (medico_id, paciente_id, items_json, total_usd, observaciones, estado, fecha_emision)
-                VALUES (?, ?, ?, ?, ?, 'pendiente', NOW())
-            ");
-            $stmtPres->execute([
-                $medicoId,
-                $pacienteId,
-                json_encode($items, JSON_UNESCAPED_UNICODE),
-                $totalUsd,
-                $obs
-            ]);
+            $colsPres = self::columnasTabla($pdo, 'gm_presupuestos');
+            $campos = ['medico_id', 'paciente_id', 'total_usd', 'estado'];
+            $valores = [$medicoId, $pacienteId, $totalUsd, 'pendiente'];
+
+            if (in_array('items_json', $colsPres, true)) {
+                $campos[] = 'items_json';
+                $valores[] = json_encode($items, JSON_UNESCAPED_UNICODE);
+            } elseif (in_array('detalle_json', $colsPres, true)) {
+                $campos[] = 'detalle_json';
+                $valores[] = json_encode($items, JSON_UNESCAPED_UNICODE);
+            }
+            if (in_array('observaciones', $colsPres, true)) {
+                $campos[] = 'observaciones';
+                $valores[] = $obs;
+            }
+            if (in_array('fecha_emision', $colsPres, true)) {
+                $campos[] = 'fecha_emision';
+                $valores[] = date('Y-m-d H:i:s');
+            }
+
+            $colsSql = implode(', ', $campos);
+            $marksSql = implode(', ', array_fill(0, count($valores), '?'));
+            $stmtPres = $pdo->prepare("INSERT INTO gm_presupuestos ($colsSql) VALUES ($marksSql)");
+            $stmtPres->execute($valores);
 
             echo json_encode([
                 "status"         => "success",
