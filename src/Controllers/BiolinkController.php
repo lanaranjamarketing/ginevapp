@@ -606,14 +606,12 @@ class BiolinkController {
             }
 
             $items = [];
-            $nombresServicios = [];
             $totalUsd = 0.0;
             foreach ($itemsRaw as $it) {
                 $precio = floatval($it['precio_usd'] ?? $it['precio'] ?? $it['monto_usd'] ?? 0);
                 $nomSrv = $it['nombre'] ?? $it['nombre_servicio'] ?? $it['titulo'] ?? 'Servicio';
                 $descSrv = $it['descripcion'] ?? $nomSrv;
                 $totalUsd += $precio;
-                $nombresServicios[] = "1x $nomSrv";
                 $items[] = [
                     'id'           => intval($it['id'] ?? 0),
                     'servicio_id'  => intval($it['id'] ?? 0),
@@ -659,11 +657,12 @@ class BiolinkController {
                 $campos[] = 'paciente_direccion';
                 $valores[] = $pacInfo['direccion'];
             }
+            if (in_array('estatus', $colsPres, true)) {
+                $campos[] = 'estatus';
+                $valores[] = 'pendiente';
+            }
             if (in_array('estado', $colsPres, true)) {
                 $campos[] = 'estado';
-                $valores[] = 'pendiente';
-            } elseif (in_array('estatus', $colsPres, true)) {
-                $campos[] = 'estatus';
                 $valores[] = 'pendiente';
             }
             if (in_array('numero_presupuesto', $colsPres, true)) {
@@ -712,80 +711,6 @@ class BiolinkController {
                 $stmtUpdUrl = $pdo->prepare("UPDATE gm_presupuestos SET url_pdf = ? WHERE id = ?");
                 $stmtUpdUrl->execute([$pdfUrl, $presupuestoId]);
             }
-
-            // 4. Registrar también en gm_finanzas para que aparezca en el módulo Finanzas -> Presupuestos
-            try {
-                $colsFin = self::columnasTabla($pdo, 'gm_finanzas');
-                $descFin = "Presupuesto N° $numeroPresPadded: " . implode(', ', $nombresServicios);
-                $cFin = ['medico_id'];
-                $vFin = [$medicoId];
-
-                if (in_array('paciente_id', $colsFin, true)) {
-                    $cFin[] = 'paciente_id';
-                    $vFin[] = $pacienteId;
-                }
-                if (in_array('presupuesto_id', $colsFin, true)) {
-                    $cFin[] = 'presupuesto_id';
-                    $vFin[] = $presupuestoId;
-                }
-                if (in_array('cliente_nombre', $colsFin, true)) {
-                    $cFin[] = 'cliente_nombre';
-                    $vFin[] = $pacInfo['nombre'];
-                } elseif (in_array('paciente_nombre', $colsFin, true)) {
-                    $cFin[] = 'paciente_nombre';
-                    $vFin[] = $pacInfo['nombre'];
-                }
-                if (in_array('tipo', $colsFin, true)) {
-                    $cFin[] = 'tipo';
-                    $vFin[] = 'presupuesto';
-                } elseif (in_array('tipo_movimiento', $colsFin, true)) {
-                    $cFin[] = 'tipo_movimiento';
-                    $vFin[] = 'presupuesto';
-                }
-                if (in_array('concepto', $colsFin, true)) {
-                    $cFin[] = 'concepto';
-                    $vFin[] = $descFin;
-                } elseif (in_array('descripcion', $colsFin, true)) {
-                    $cFin[] = 'descripcion';
-                    $vFin[] = $descFin;
-                }
-                if (in_array('monto_usd', $colsFin, true)) {
-                    $cFin[] = 'monto_usd';
-                    $vFin[] = $totalUsd;
-                } elseif (in_array('total_usd', $colsFin, true)) {
-                    $cFin[] = 'total_usd';
-                    $vFin[] = $totalUsd;
-                }
-                if (in_array('monto_bs', $colsFin, true)) {
-                    $cFin[] = 'monto_bs';
-                    $vFin[] = $totalBs;
-                } elseif (in_array('total_bs', $colsFin, true)) {
-                    $cFin[] = 'total_bs';
-                    $vFin[] = $totalBs;
-                }
-                if (in_array('tasa_bcv', $colsFin, true)) {
-                    $cFin[] = 'tasa_bcv';
-                    $vFin[] = $tasaBcv;
-                }
-                if (in_array('estado', $colsFin, true)) {
-                    $cFin[] = 'estado';
-                    $vFin[] = 'pendiente';
-                } elseif (in_array('estatus', $colsFin, true)) {
-                    $cFin[] = 'estatus';
-                    $vFin[] = 'pendiente';
-                }
-                if (in_array('fecha', $colsFin, true)) {
-                    $cFin[] = 'fecha';
-                    $vFin[] = $fechaEmision;
-                } elseif (in_array('fecha_registro', $colsFin, true)) {
-                    $cFin[] = 'fecha_registro';
-                    $vFin[] = date('Y-m-d H:i:s');
-                }
-
-                $sqlFin = "INSERT INTO gm_finanzas (" . implode(', ', $cFin) . ") VALUES (" . implode(', ', array_fill(0, count($vFin), '?')) . ")";
-                $stmtFin = $pdo->prepare($sqlFin);
-                $stmtFin->execute($vFin);
-            } catch (Exception $_) {}
 
             echo json_encode([
                 "status"             => "success",
