@@ -228,7 +228,7 @@ class BiolinkController {
                 }
             }
 
-            // 4. Servicios activos (incluyendo cantidad de cuotas)
+            // 4. Servicios activos (incluyendo permite_financiamiento y cantidad_cuotas)
             $colsSrv = self::columnasTabla($pdo, 'gm_servicios');
             $whereEstado = in_array('estado', $colsSrv, true)
                 ? "AND (estado = 'activo' OR estado IS NULL OR estado = '')"
@@ -239,16 +239,21 @@ class BiolinkController {
 
             $servicios = [];
             foreach ($serviciosRaw as $sr) {
+                $permiteFin = intval($sr['permite_financiamiento'] ?? 0);
                 $cuotas = intval($sr['cantidad_cuotas'] ?? $sr['cuotas'] ?? $sr['num_cuotas'] ?? 1);
                 if ($cuotas <= 0) $cuotas = 1;
+                $esContado = ($permiteFin === 0 && $cuotas <= 1);
+
                 $servicios[] = [
-                    'id'              => intval($sr['id'] ?? 0),
-                    'nombre'          => $sr['nombre'] ?? $sr['nombre_servicio'] ?? $sr['titulo'] ?? 'Servicio Médico',
-                    'descripcion'     => $sr['descripcion'] ?? $sr['detalle'] ?? '',
-                    'precio_usd'      => $sr['precio_usd'] ?? $sr['precio'] ?? $sr['monto_usd'] ?? '0',
-                    'tipo'            => $sr['tipo'] ?? 'servicio',
-                    'cantidad_cuotas' => $cuotas,
-                    'cuotas'          => $cuotas,
+                    'id'                     => intval($sr['id'] ?? 0),
+                    'nombre'                 => $sr['nombre'] ?? $sr['nombre_servicio'] ?? $sr['titulo'] ?? 'Servicio Médico',
+                    'descripcion'            => $sr['descripcion'] ?? $sr['detalle'] ?? '',
+                    'precio_usd'             => $sr['precio_usd'] ?? $sr['precio'] ?? $sr['monto_usd'] ?? '0',
+                    'tipo'                   => $sr['tipo'] ?? 'servicio',
+                    'permite_financiamiento' => $permiteFin,
+                    'cantidad_cuotas'        => $cuotas,
+                    'cuotas'                 => $cuotas,
+                    'es_contado'             => $esContado,
                 ];
             }
 
@@ -309,7 +314,6 @@ class BiolinkController {
 
     /**
      * POST /api/publico/biolink/verificar-whatsapp
-     * Valida paciente por cédula/documento y/o número de WhatsApp
      */
     public static function verificarWhatsapp(array $input) {
         try {
@@ -325,7 +329,6 @@ class BiolinkController {
             $pdo = Database::conectar();
             $pac = null;
 
-            // 1. Buscar por documento (cédula) primero si viene informado
             if ($cedula !== '') {
                 $stmtCed = $pdo->prepare("
                     SELECT * FROM gm_usuarios_extendidos
@@ -336,7 +339,6 @@ class BiolinkController {
                 $pac = $stmtCed->fetch(PDO::FETCH_ASSOC);
             }
 
-            // 2. Si no apareció por cédula, buscar por los últimos 10 dígitos de WhatsApp
             if (!$pac && strlen($whatsapp) >= 10) {
                 $ultimos10 = substr($whatsapp, -10);
                 $stmtWa = $pdo->prepare("
@@ -501,6 +503,7 @@ class BiolinkController {
 
     /**
      * POST /api/publico/biolink/presupuesto
+     * Solo acepta servicios de contado (permite_financiamiento = 0 y cantidad_cuotas <= 1)
      */
     public static function solicitarPresupuesto(array $input) {
         try {
@@ -532,9 +535,33 @@ class BiolinkController {
 
             $idsLimpios = array_values(array_filter(array_map('intval', $serviciosIds), fn($v) => $v > 0));
             $placeholders = implode(',', array_fill(0, count($idsLimpios), '?'));
-            $stmtSrv = $pdo->prepare("SELECT * FROM gm_servicios WHERE id IN ($placeholders)");
+
+            // Filtrar estrictamente servicios de contado (sin financiamiento y 1 cuota)
+            $colsSrv = self::columnasTabla($pdo, 'gm_servicios');
+            $filtroFin = in_array('permite_financiamiento', $colsSrv, true)
+                ? "AND COALESCE(permite_financiamiento, 0) = 0"
+                : "";
+            $filtroCuotas = in_array('cantidad_cuotas', $colsSrv, true)
+                ? "AND COALESCE(cantidad_cuotas, 1) <= 1"
+                : "";
+
+            $stmtSrv = $pdo->prepare("
+                SELECT * FROM gm_servicios
+                WHERE id IN ($placeholders)
+                  $filtroFin
+                  $filtroCuotas
+            ");
             $stmtSrv->execute($idsLimpios);
             $itemsRaw = $stmtSrv->fetchAll(PDO::FETCH_ASSOC);
+
+            if (empty($itemsRaw)) {
+                http_response_code(400);
+                echo json_encode([
+                    "status"  => "error",
+                    "mensaje" => "Los servicios seleccionados no aplican para presupuesto de contado."
+                ], JSON_UNESCAPED_UNICODE);
+                return;
+            }
 
             $items = [];
             $totalUsd = 0.0;
@@ -542,13 +569,13 @@ class BiolinkController {
                 $precio = floatval($it['precio_usd'] ?? $it['precio'] ?? $it['monto_usd'] ?? 0);
                 $totalUsd += $precio;
                 $items[] = [
-                    'id'          => intval($it['id'] ?? 0),
-                    'servicio_id' => intval($it['id'] ?? 0),
-                    'nombre'      => $it['nombre'] ?? $it['nombre_servicio'] ?? $it['titulo'] ?? 'Servicio',
-                    'descripcion' => $it['nombre'] ?? $it['nombre_servicio'] ?? $it['titulo'] ?? 'Servicio',
-                    'cantidad'    => 1,
-                    'precio_usd'  => $precio,
-                    'subtotal_usd'=> $precio,
+                    'id'           => intval($it['id'] ?? 0),
+                    'servicio_id'  => intval($it['id'] ?? 0),
+                    'nombre'       => $it['nombre'] ?? $it['nombre_servicio'] ?? $it['titulo'] ?? 'Servicio',
+                    'descripcion'  => $it['nombre'] ?? $it['nombre_servicio'] ?? $it['titulo'] ?? 'Servicio',
+                    'cantidad'     => 1,
+                    'precio_usd'   => $precio,
+                    'subtotal_usd' => $precio,
                 ];
             }
             $totalBs = round($totalUsd * $tasaBcv, 2);
