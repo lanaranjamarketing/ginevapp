@@ -25,9 +25,15 @@ class BiolinkController {
 
     private static function normalizarWhatsapp(string $raw): string {
         $digitos = preg_replace('/\D/', '', $raw);
+        // Caso +5804143774011 -> 5804143774011 -> quitar el 0 tras 58 -> 584143774011
+        if (strpos($digitos, '580') === 0 && strlen($digitos) >= 12) {
+            return '58' . substr($digitos, 3);
+        }
+        // Caso local 04143774011 -> 584143774011
         if (strlen($digitos) === 11 && strpos($digitos, '0') === 0) {
             return '58' . substr($digitos, 1);
         }
+        // Caso local 4143774011 -> 584143774011
         if (strlen($digitos) === 10 && strpos($digitos, '4') === 0) {
             return '58' . $digitos;
         }
@@ -49,6 +55,24 @@ class BiolinkController {
             $cols[] = $row['Field'];
         }
         return $cols;
+    }
+
+    private static function obtenerTasaBcvActual(PDO $pdo): float {
+        foreach (['gm_tasas_bcv', 'gm_tasa_bcv'] as $tablaTasa) {
+            try {
+                $stmt = $pdo->query("SELECT * FROM `$tablaTasa` ORDER BY id DESC LIMIT 1");
+                if ($stmt) {
+                    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                    if ($row) {
+                        $val = floatval($row['tasa_usd'] ?? $row['tasa'] ?? $row['valor'] ?? $row['monto'] ?? 0);
+                        if ($val > 0) {
+                            return $val;
+                        }
+                    }
+                }
+            } catch (Exception $_) {}
+        }
+        return 1.0;
     }
 
     private static function resolverMedicoPorSlugOId(PDO $pdo, string $slugOId): ?array {
@@ -228,7 +252,7 @@ class BiolinkController {
                 }
             }
 
-            // 4. Servicios activos (incluyendo permite_financiamiento y cantidad_cuotas)
+            // 4. Servicios activos (incluyendo permite_financiamiento, cantidad_cuotas y frecuencia_cuotas)
             $colsSrv = self::columnasTabla($pdo, 'gm_servicios');
             $whereEstado = in_array('estado', $colsSrv, true)
                 ? "AND (estado = 'activo' OR estado IS NULL OR estado = '')"
@@ -243,6 +267,7 @@ class BiolinkController {
                 $cuotas = intval($sr['cantidad_cuotas'] ?? $sr['cuotas'] ?? $sr['num_cuotas'] ?? 1);
                 if ($cuotas <= 0) $cuotas = 1;
                 $esContado = ($permiteFin === 0 && $cuotas <= 1);
+                $frecuencia = trim((string)($sr['frecuencia_cuotas'] ?? $sr['frecuencia'] ?? 'semanal')) ?: 'semanal';
 
                 $servicios[] = [
                     'id'                     => intval($sr['id'] ?? 0),
@@ -250,9 +275,11 @@ class BiolinkController {
                     'descripcion'            => $sr['descripcion'] ?? $sr['detalle'] ?? '',
                     'precio_usd'             => $sr['precio_usd'] ?? $sr['precio'] ?? $sr['monto_usd'] ?? '0',
                     'tipo'                   => $sr['tipo'] ?? 'servicio',
+                    'es_combo'               => intval($sr['es_combo'] ?? 0),
                     'permite_financiamiento' => $permiteFin,
                     'cantidad_cuotas'        => $cuotas,
                     'cuotas'                 => $cuotas,
+                    'frecuencia_cuotas'      => $frecuencia,
                     'es_contado'             => $esContado,
                 ];
             }
@@ -319,8 +346,9 @@ class BiolinkController {
         try {
             $whatsapp = self::normalizarWhatsapp((string)($input['whatsapp'] ?? ''));
             $cedula   = preg_replace('/\D/', '', (string)($input['cedula'] ?? ''));
+            $tipoDoc  = strtoupper(trim((string)($input['tipo_identificacion'] ?? '')));
 
-            if (strlen($whatsapp) < 10 && $cedula === '') {
+            if (strlen($whatsapp) < 8 && $cedula === '') {
                 http_response_code(400);
                 echo json_encode(["status" => "error", "mensaje" => "Ingresa el documento y WhatsApp del paciente."], JSON_UNESCAPED_UNICODE);
                 return;
@@ -329,16 +357,40 @@ class BiolinkController {
             $pdo = Database::conectar();
             $pac = null;
 
-            if ($cedula !== '' && strlen($whatsapp) >= 10) {
-                $ultimos10 = substr($whatsapp, -10);
-                $stmtAmbos = $pdo->prepare("
+            if ($cedula !== '' && strlen($whatsapp) >= 8) {
+                $sql = "
                     SELECT * FROM gm_usuarios_extendidos
                     WHERE REPLACE(REPLACE(cedula, '.', ''), '-', '') = ?
-                      AND REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') LIKE ?
-                    LIMIT 1
-                ");
-                $stmtAmbos->execute([$cedula, '%' . $ultimos10]);
+                      AND REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') = ?
+                ";
+                $params = [$cedula, $whatsapp];
+                if ($tipoDoc !== '') {
+                    $sql .= " AND UPPER(COALESCE(tipo_identificacion, 'V')) = ?";
+                    $params[] = $tipoDoc;
+                }
+                $sql .= " LIMIT 1";
+                $stmtAmbos = $pdo->prepare($sql);
+                $stmtAmbos->execute($params);
                 $pac = $stmtAmbos->fetch(PDO::FETCH_ASSOC);
+
+                // Respaldo por últimos 10 dígitos del WhatsApp si estaba guardado sin código de país
+                if (!$pac && strlen($whatsapp) >= 10) {
+                    $ultimos10 = substr($whatsapp, -10);
+                    $sql2 = "
+                        SELECT * FROM gm_usuarios_extendidos
+                        WHERE REPLACE(REPLACE(cedula, '.', ''), '-', '') = ?
+                          AND REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') LIKE ?
+                    ";
+                    $params2 = [$cedula, '%' . $ultimos10];
+                    if ($tipoDoc !== '') {
+                        $sql2 .= " AND UPPER(COALESCE(tipo_identificacion, 'V')) = ?";
+                        $params2[] = $tipoDoc;
+                    }
+                    $sql2 .= " LIMIT 1";
+                    $stmtAmbos2 = $pdo->prepare($sql2);
+                    $stmtAmbos2->execute($params2);
+                    $pac = $stmtAmbos2->fetch(PDO::FETCH_ASSOC);
+                }
             } elseif ($cedula !== '') {
                 $stmtCed = $pdo->prepare("
                     SELECT * FROM gm_usuarios_extendidos
@@ -347,14 +399,13 @@ class BiolinkController {
                 ");
                 $stmtCed->execute([$cedula]);
                 $pac = $stmtCed->fetch(PDO::FETCH_ASSOC);
-            } elseif (strlen($whatsapp) >= 10) {
-                $ultimos10 = substr($whatsapp, -10);
+            } elseif (strlen($whatsapp) >= 8) {
                 $stmtWa = $pdo->prepare("
                     SELECT * FROM gm_usuarios_extendidos
-                    WHERE REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') LIKE ?
+                    WHERE REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') = ?
                     LIMIT 1
                 ");
-                $stmtWa->execute(['%' . $ultimos10]);
+                $stmtWa->execute([$whatsapp]);
                 $pac = $stmtWa->fetch(PDO::FETCH_ASSOC);
             }
 
@@ -371,6 +422,7 @@ class BiolinkController {
                         "segundo_nombre"      => $pac['segundo_nombre'] ?? '',
                         "apellido"            => $pac['apellido'] ?? '',
                         "segundo_apellido"    => $pac['segundo_apellido'] ?? '',
+                        "edad"                => intval($pac['edad'] ?? 0),
                         "fecha_nacimiento"    => $pac['fecha_nacimiento'] ?? '',
                         "sexo"                => $pac['sexo'] ?? 'Femenino',
                         "email"               => $pac['email'] ?? '',
@@ -398,13 +450,14 @@ class BiolinkController {
      */
     private static function obtenerOCrearPaciente(PDO $pdo, array $input, int $medicoId): array {
         $pacienteId = intval($input['paciente_id'] ?? 0);
-        $tipoDoc    = trim((string)($input['tipo_identificacion'] ?? 'V')) ?: 'V';
+        $tipoDoc    = strtoupper(trim((string)($input['tipo_identificacion'] ?? 'V'))) ?: 'V';
         $cedula     = preg_replace('/\D/', '', (string)($input['cedula'] ?? ''));
         $whatsapp   = self::normalizarWhatsapp((string)($input['whatsapp'] ?? ''));
         $nombre     = trim((string)($input['nombre'] ?? ''));
         $segNombre  = trim((string)($input['segundo_nombre'] ?? ''));
         $apellido   = trim((string)($input['apellido'] ?? ''));
         $segApel    = trim((string)($input['segundo_apellido'] ?? ''));
+        $edadInput  = intval($input['edad'] ?? 0);
         $fnac       = trim((string)($input['fecha_nacimiento'] ?? ''));
         $sexo       = trim((string)($input['sexo'] ?? 'Femenino')) ?: 'Femenino';
         $email      = trim((string)($input['email'] ?? ''));
@@ -420,32 +473,41 @@ class BiolinkController {
             $stmtId->execute([$pacienteId, $pacienteId]);
             $row = $stmtId->fetch(PDO::FETCH_ASSOC);
         }
+        if (!$row && $cedula !== '' && strlen($whatsapp) >= 8) {
+            $stmtAmbos = $pdo->prepare("
+                SELECT * FROM gm_usuarios_extendidos
+                WHERE REPLACE(REPLACE(cedula, '.', ''), '-', '') = ?
+                  AND REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') = ?
+                LIMIT 1
+            ");
+            $stmtAmbos->execute([$cedula, $whatsapp]);
+            $row = $stmtAmbos->fetch(PDO::FETCH_ASSOC);
+        }
         if (!$row && $cedula !== '') {
             $stmtCed = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE REPLACE(REPLACE(cedula, '.', ''), '-', '') = ? LIMIT 1");
             $stmtCed->execute([$cedula]);
             $row = $stmtCed->fetch(PDO::FETCH_ASSOC);
         }
-        if (!$row && strlen($whatsapp) >= 10) {
-            $ultimos10 = substr($whatsapp, -10);
-            $stmtWa = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') LIKE ? LIMIT 1");
-            $stmtWa->execute(['%' . $ultimos10]);
+        if (!$row && strlen($whatsapp) >= 8) {
+            $stmtWa = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') = ? LIMIT 1");
+            $stmtWa->execute([$whatsapp]);
             $row = $stmtWa->fetch(PDO::FETCH_ASSOC);
         }
 
         if ($row) {
             $uid = intval($row['user_id'] ?? $row['id']);
             $nomCompleto = trim(implode(' ', array_filter([
-                $row['nombre'] ?? $nombre,
-                $row['segundo_nombre'] ?? $segNombre,
-                $row['apellido'] ?? $apellido,
-                $row['segundo_apellido'] ?? $segApel,
+                $row['nombre'] ?: $nombre,
+                $row['segundo_nombre'] ?: $segNombre,
+                $row['apellido'] ?: $apellido,
+                $row['segundo_apellido'] ?: $segApel,
             ])));
-            $td  = trim((string)($row['tipo_identificacion'] ?? $tipoDoc)) ?: 'V';
-            $ced = trim((string)($row['cedula'] ?? $cedula));
-            $tel = trim((string)($row['whatsapp'] ?? $whatsapp));
-            $dirBase = trim((string)($row['direccion_detalle'] ?? ($row['direccion'] ?? ($row['domicilio'] ?? $direccion))));
-            $estBase = trim((string)($row['estado'] ?? $estado));
-            $paisBase = trim((string)($row['pais'] ?? $pais));
+            $td  = trim((string)($row['tipo_identificacion'] ?: $tipoDoc)) ?: 'V';
+            $ced = trim((string)($row['cedula'] ?: $cedula));
+            $tel = trim((string)($row['whatsapp'] ?: $whatsapp));
+            $dirBase  = trim((string)($row['direccion_detalle'] ?? ($row['direccion'] ?? ($row['domicilio'] ?? $direccion))));
+            $estBase  = trim((string)($row['estado'] ?: $estado));
+            $paisBase = trim((string)($row['pais'] ?: $pais));
             $dirCompleta = trim(implode(', ', array_filter([$dirBase, $estBase, $paisBase])));
 
             return [
@@ -453,15 +515,15 @@ class BiolinkController {
                 'nombre'      => $nomCompleto,
                 'cedula'      => $ced !== '' ? "$td-$ced" : '',
                 'telefono'    => $tel,
-                'email'       => trim((string)($row['email'] ?? $email)),
+                'email'       => trim((string)($row['email'] ?: $email)),
                 'pais'        => $paisBase,
                 'estado'      => $estBase,
                 'direccion'   => $dirCompleta,
             ];
         }
 
-        $edad = 0;
-        if ($fnac !== '' && strtotime($fnac) !== false) {
+        $edad = $edadInput;
+        if ($edad <= 0 && $fnac !== '' && strtotime($fnac) !== false) {
             $edad = max(0, (int)floor((time() - strtotime($fnac)) / 31557600));
         }
 
@@ -523,17 +585,185 @@ class BiolinkController {
         ];
     }
 
+    private static function intervaloDiasPorFrecuencia(string $frecuencia): int {
+        $f = mb_strtolower(trim($frecuencia), 'UTF-8');
+        if (strpos($f, 'quincen') !== false || strpos($f, 'biweek') !== false) return 15;
+        if (strpos($f, 'mensual') !== false || strpos($f, 'mes') !== false || strpos($f, 'month') !== false) return 30;
+        if (strpos($f, 'diari') !== false || strpos($f, 'day') !== false) return 1;
+        return 7;
+    }
+
+    /**
+     * Genera las cuotas de financiamiento en gm_cuentas_por_cobrar y/o gm_finanzas
+     */
+    private static function registrarCuentasPorCobrarFinanciamiento(
+        PDO $pdo,
+        int $medicoId,
+        int $pacienteId,
+        int $citaId,
+        array $pacInfo,
+        array $input
+    ): void {
+        $esFinanciado = intval($input['es_financiado'] ?? 0) === 1;
+        $montoFinanciadoTotal = floatval($input['monto_financiado_usd'] ?? 0);
+        if (!$esFinanciado && $montoFinanciadoTotal <= 0) {
+            return;
+        }
+
+        $tasaBcv = self::obtenerTasaBcvActual($pdo);
+        $fechaBase = trim((string)($input['fecha_credito'] ?? date('Y-m-d')));
+        if (strtotime($fechaBase) === false) {
+            $fechaBase = date('Y-m-d');
+        }
+
+        $detalleFin = is_array($input['detalle_financiamiento'] ?? null)
+            ? $input['detalle_financiamiento']
+            : [];
+
+        // Construir lista de planes financiados (uno por servicio financiado o un plan global)
+        $planes = [];
+        foreach ($detalleFin as $item) {
+            if (!is_array($item)) continue;
+            $itemFin = !empty($item['financiado']) || (($item['modalidad_pago'] ?? '') === 'financiado');
+            $precioItem = floatval($item['precio_usd'] ?? 0);
+            if ($itemFin && $precioItem > 0) {
+                $numCuotas = max(1, intval($item['cuotas_semanales'] ?? $item['cantidad_cuotas'] ?? 1));
+                $frec = trim((string)($item['frecuencia_cuotas'] ?? 'semanal')) ?: 'semanal';
+                $planes[] = [
+                    'servicio_id'     => intval($item['servicio_id'] ?? 0),
+                    'nombre_servicio' => trim((string)($item['nombre_servicio'] ?? 'Servicio financiado')),
+                    'monto_total_usd' => $precioItem,
+                    'num_cuotas'      => $numCuotas,
+                    'frecuencia'      => $frec,
+                ];
+            }
+        }
+
+        if (empty($planes) && $montoFinanciadoTotal > 0) {
+            $numCuotas = max(1, intval($input['cuotas_semanales'] ?? 1));
+            $planes[] = [
+                'servicio_id'     => 0,
+                'nombre_servicio' => trim((string)($input['procedimiento'] ?? $input['motivo'] ?? 'Servicio médico financiado')),
+                'monto_total_usd' => $montoFinanciadoTotal,
+                'num_cuotas'      => $numCuotas,
+                'frecuencia'      => trim((string)($input['frecuencia_cuotas'] ?? 'semanal')) ?: 'semanal',
+            ];
+        }
+
+        // Detectar tablas disponibles de Cuentas por Cobrar
+        $colsCxc = null;
+        foreach (['gm_cuentas_por_cobrar', 'gm_cuentas_cobrar', 'gm_cxc'] as $tCxc) {
+            try {
+                $colsCxc = self::columnasTabla($pdo, $tCxc);
+                $tablaCxc = $tCxc;
+                break;
+            } catch (Exception $_) {}
+        }
+
+        $colsFin = null;
+        try {
+            $colsFin = self::columnasTabla($pdo, 'gm_finanzas');
+        } catch (Exception $_) {}
+
+        foreach ($planes as $plan) {
+            $numCuotas   = $plan['num_cuotas'];
+            $montoTotal  = $plan['monto_total_usd'];
+            $montoCuota  = round($montoTotal / $numCuotas, 2);
+            $diasPaso    = self::intervaloDiasPorFrecuencia($plan['frecuencia']);
+            $nomServicio = $plan['nombre_servicio'];
+
+            for ($i = 1; $i <= $numCuotas; $i++) {
+                // Ajustar centavos en la última cuota para cuadrar exacto
+                $cuotaActualUsd = ($i === $numCuotas)
+                    ? round($montoTotal - ($montoCuota * ($numCuotas - 1)), 2)
+                    : $montoCuota;
+                $cuotaActualBs = round($cuotaActualUsd * $tasaBcv, 2);
+
+                $diasOffset = ($i - 1) * $diasPaso;
+                $fechaVenc = date('Y-m-d', strtotime($fechaBase . " +{$diasOffset} days"));
+                $concepto = "Cuota $i/$numCuotas - $nomServicio (Cita #$citaId)";
+
+                // 1. Insertar en tabla específica de Cuentas por Cobrar si existe
+                if ($colsCxc !== null && isset($tablaCxc)) {
+                    $c = ['medico_id'];
+                    $v = [$medicoId];
+
+                    if (in_array('paciente_id', $colsCxc, true)) { $c[] = 'paciente_id'; $v[] = $pacienteId; }
+                    if (in_array('cita_id', $colsCxc, true)) { $c[] = 'cita_id'; $v[] = $citaId; }
+                    if (in_array('servicio_id', $colsCxc, true) && $plan['servicio_id'] > 0) { $c[] = 'servicio_id'; $v[] = $plan['servicio_id']; }
+                    if (in_array('paciente_nombre', $colsCxc, true)) { $c[] = 'paciente_nombre'; $v[] = $pacInfo['nombre']; }
+                    if (in_array('cliente_nombre', $colsCxc, true)) { $c[] = 'cliente_nombre'; $v[] = $pacInfo['nombre']; }
+                    if (in_array('paciente_cedula', $colsCxc, true)) { $c[] = 'paciente_cedula'; $v[] = $pacInfo['cedula']; }
+                    if (in_array('paciente_telefono', $colsCxc, true)) { $c[] = 'paciente_telefono'; $v[] = $pacInfo['telefono']; }
+                    if (in_array('concepto', $colsCxc, true)) { $c[] = 'concepto'; $v[] = $concepto; }
+                    elseif (in_array('descripcion', $colsCxc, true)) { $c[] = 'descripcion'; $v[] = $concepto; }
+                    if (in_array('numero_cuota', $colsCxc, true)) { $c[] = 'numero_cuota'; $v[] = $i; }
+                    if (in_array('total_cuotas', $colsCxc, true)) { $c[] = 'total_cuotas'; $v[] = $numCuotas; }
+                    if (in_array('monto_usd', $colsCxc, true)) { $c[] = 'monto_usd'; $v[] = $cuotaActualUsd; }
+                    elseif (in_array('monto', $colsCxc, true)) { $c[] = 'monto'; $v[] = $cuotaActualUsd; }
+                    if (in_array('saldo_usd', $colsCxc, true)) { $c[] = 'saldo_usd'; $v[] = $cuotaActualUsd; }
+                    elseif (in_array('saldo_pendiente', $colsCxc, true)) { $c[] = 'saldo_pendiente'; $v[] = $cuotaActualUsd; }
+                    if (in_array('monto_bs', $colsCxc, true)) { $c[] = 'monto_bs'; $v[] = $cuotaActualBs; }
+                    if (in_array('tasa_bcv', $colsCxc, true)) { $c[] = 'tasa_bcv'; $v[] = $tasaBcv; }
+                    if (in_array('fecha_emision', $colsCxc, true)) { $c[] = 'fecha_emision'; $v[] = $fechaBase; }
+                    if (in_array('fecha_vencimiento', $colsCxc, true)) { $c[] = 'fecha_vencimiento'; $v[] = $fechaVenc; }
+                    if (in_array('estado', $colsCxc, true)) { $c[] = 'estado'; $v[] = 'pendiente'; }
+                    elseif (in_array('estatus', $colsCxc, true)) { $c[] = 'estatus'; $v[] = 'pendiente'; }
+                    if (in_array('origen', $colsCxc, true)) { $c[] = 'origen'; $v[] = 'biolink'; }
+
+                    $sqlCxc = "INSERT INTO `$tablaCxc` (" . implode(', ', $c) . ") VALUES (" . implode(', ', array_fill(0, count($v), '?')) . ")";
+                    $pdo->prepare($sqlCxc)->execute($v);
+                }
+
+                // 2. Registrar también en gm_finanzas como cuenta_por_cobrar si existe la tabla
+                if ($colsFin !== null) {
+                    $cf = ['medico_id'];
+                    $vf = [$medicoId];
+
+                    if (in_array('paciente_id', $colsFin, true)) { $cf[] = 'paciente_id'; $vf[] = $pacienteId; }
+                    if (in_array('cita_id', $colsFin, true)) { $cf[] = 'cita_id'; $vf[] = $citaId; }
+                    if (in_array('cliente_nombre', $colsFin, true)) { $cf[] = 'cliente_nombre'; $vf[] = $pacInfo['nombre']; }
+                    elseif (in_array('paciente_nombre', $colsFin, true)) { $cf[] = 'paciente_nombre'; $vf[] = $pacInfo['nombre']; }
+                    if (in_array('tipo', $colsFin, true)) { $cf[] = 'tipo'; $vf[] = 'cuenta_por_cobrar'; }
+                    elseif (in_array('tipo_movimiento', $colsFin, true)) { $cf[] = 'tipo_movimiento'; $vf[] = 'cuenta_por_cobrar'; }
+                    if (in_array('concepto', $colsFin, true)) { $cf[] = 'concepto'; $vf[] = $concepto; }
+                    elseif (in_array('descripcion', $colsFin, true)) { $cf[] = 'descripcion'; $vf[] = $concepto; }
+                    if (in_array('monto_usd', $colsFin, true)) { $cf[] = 'monto_usd'; $vf[] = $cuotaActualUsd; }
+                    elseif (in_array('total_usd', $colsFin, true)) { $cf[] = 'total_usd'; $vf[] = $cuotaActualUsd; }
+                    if (in_array('monto_bs', $colsFin, true)) { $cf[] = 'monto_bs'; $vf[] = $cuotaActualBs; }
+                    elseif (in_array('total_bs', $colsFin, true)) { $cf[] = 'total_bs'; $vf[] = $cuotaActualBs; }
+                    if (in_array('tasa_bcv', $colsFin, true)) { $cf[] = 'tasa_bcv'; $vf[] = $tasaBcv; }
+                    if (in_array('estado', $colsFin, true)) { $cf[] = 'estado'; $vf[] = 'pendiente'; }
+                    elseif (in_array('estatus', $colsFin, true)) { $cf[] = 'estatus'; $vf[] = 'pendiente'; }
+                    if (in_array('fecha', $colsFin, true)) { $cf[] = 'fecha'; $vf[] = $fechaVenc; }
+                    elseif (in_array('fecha_vencimiento', $colsFin, true)) { $cf[] = 'fecha_vencimiento'; $vf[] = $fechaVenc; }
+                    elseif (in_array('fecha_registro', $colsFin, true)) { $cf[] = 'fecha_registro'; $vf[] = date('Y-m-d H:i:s'); }
+
+                    $sqlFin = "INSERT INTO gm_finanzas (" . implode(', ', $cf) . ") VALUES (" . implode(', ', array_fill(0, count($vf), '?')) . ")";
+                    $pdo->prepare($sqlFin)->execute($vf);
+                }
+            }
+        }
+    }
+
     /**
      * POST /api/publico/biolink/agendar
      */
     public static function agendarCita(array $input) {
         try {
-            $medicoId  = intval($input['medico_id'] ?? 0);
-            $nombre    = trim((string)($input['nombre'] ?? ''));
-            $apellido  = trim((string)($input['apellido'] ?? ''));
-            $fechaCita = trim((string)($input['fecha_cita'] ?? ''));
-            $horaCita  = trim((string)($input['hora_cita'] ?? '08:00'));
-            $motivo    = trim((string)($input['motivo'] ?? 'Cita agendada desde BioLink'));
+            $medicoId     = intval($input['medico_id'] ?? 0);
+            $calendarioId = intval($input['calendario_id'] ?? 0);
+            $sedeId       = intval($input['sede_id'] ?? 0);
+            $nombre       = trim((string)($input['nombre'] ?? ''));
+            $apellido     = trim((string)($input['apellido'] ?? ''));
+            $fechaCita    = trim((string)($input['fecha_cita'] ?? ''));
+            $horaCita     = trim((string)($input['hora_cita'] ?? '08:00'));
+            $modalidad    = trim((string)($input['modalidad'] ?? 'bloques'));
+            $procedimiento = trim((string)($input['procedimiento'] ?? ''));
+            $motivoRaw    = trim((string)($input['motivo'] ?? ''));
+            $motivo       = $procedimiento !== ''
+                ? ($motivoRaw !== '' ? "$procedimiento — $motivoRaw" : $procedimiento)
+                : ($motivoRaw !== '' ? $motivoRaw : 'Cita agendada desde BioLink');
 
             if ($medicoId <= 0 || $nombre === '' || $apellido === '' || $fechaCita === '') {
                 http_response_code(400);
@@ -549,6 +779,22 @@ class BiolinkController {
             $campos = ['medico_id', 'paciente_id', 'fecha_cita', 'hora_cita', 'estado_cita'];
             $valores = [$medicoId, $pacienteId, $fechaCita, $horaCita, 'reservada'];
 
+            if ($calendarioId > 0 && in_array('calendario_id', $colsCita, true)) {
+                $campos[] = 'calendario_id';
+                $valores[] = $calendarioId;
+            }
+            if ($sedeId > 0 && in_array('sede_id', $colsCita, true)) {
+                $campos[] = 'sede_id';
+                $valores[] = $sedeId;
+            }
+            if ($modalidad !== '' && in_array('modalidad', $colsCita, true)) {
+                $campos[] = 'modalidad';
+                $valores[] = $modalidad;
+            }
+            if ($procedimiento !== '' && in_array('procedimiento', $colsCita, true)) {
+                $campos[] = 'procedimiento';
+                $valores[] = $procedimiento;
+            }
             if (in_array('motivo_consulta', $colsCita, true)) {
                 $campos[] = 'motivo_consulta';
                 $valores[] = $motivo;
@@ -561,15 +807,30 @@ class BiolinkController {
                 $valores[] = 'biolink';
             }
 
+            $totalUsd = floatval($input['total_usd'] ?? 0);
+            if ($totalUsd > 0 && in_array('total_usd', $colsCita, true)) {
+                $campos[] = 'total_usd';
+                $valores[] = $totalUsd;
+            }
+            if (in_array('es_financiado', $colsCita, true)) {
+                $campos[] = 'es_financiado';
+                $valores[] = intval($input['es_financiado'] ?? 0);
+            }
+
             $colsSql = implode(', ', $campos);
             $marksSql = implode(', ', array_fill(0, count($valores), '?'));
             $stmtCita = $pdo->prepare("INSERT INTO gm_citas ($colsSql) VALUES ($marksSql)");
             $stmtCita->execute($valores);
+            $citaId = intval($pdo->lastInsertId());
+
+            // Si la cita tiene financiamiento, calcular cuotas y almacenar en Cuentas por Cobrar
+            self::registrarCuentasPorCobrarFinanciamiento($pdo, $medicoId, $pacienteId, $citaId, $pacInfo, $input);
 
             echo json_encode([
-                "status"  => "success",
-                "mensaje" => "¡Cita reservada exitosamente! Te esperamos en consulta.",
-                "cita_id" => intval($pdo->lastInsertId())
+                "status"      => "success",
+                "mensaje"     => "¡Cita reservada exitosamente! Te esperamos en consulta.",
+                "cita_id"     => $citaId,
+                "paciente_id" => $pacienteId,
             ], JSON_UNESCAPED_UNICODE);
 
         } catch (Exception $e) {
@@ -600,16 +861,7 @@ class BiolinkController {
             $pacienteId = $pacInfo['paciente_id'];
 
             // Obtener tasa BCV actual si existe
-            $tasaBcv = 1.0;
-            try {
-                $stmtTasa = $pdo->query("SELECT tasa_usd FROM gm_tasas_bcv ORDER BY id DESC LIMIT 1");
-                if ($stmtTasa) {
-                    $rowTasa = $stmtTasa->fetch(PDO::FETCH_ASSOC);
-                    if ($rowTasa && floatval($rowTasa['tasa_usd']) > 0) {
-                        $tasaBcv = floatval($rowTasa['tasa_usd']);
-                    }
-                }
-            } catch (Exception $_) {}
+            $tasaBcv = self::obtenerTasaBcvActual($pdo);
 
             $idsLimpios = array_values(array_filter(array_map('intval', $serviciosIds), fn($v) => $v > 0));
             $placeholders = implode(',', array_fill(0, count($idsLimpios), '?'));
