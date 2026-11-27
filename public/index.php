@@ -61,6 +61,9 @@ require_once __DIR__ . '/../src/Controllers/CitaController.php';
 require_once __DIR__ . '/../src/Controllers/HistoriaController.php';
 require_once __DIR__ . '/../src/Controllers/ArchivoController.php';
 require_once __DIR__ . '/../src/Controllers/FinanzaServicioController.php';
+if (file_exists(__DIR__ . '/../src/Controllers/PresupuestoController.php')) {
+    require_once __DIR__ . '/../src/Controllers/PresupuestoController.php';
+}
 require_once __DIR__ . '/../src/Controllers/AjustesMedicoController.php';
 require_once __DIR__ . '/../src/Controllers/FirmaMedicoController.php';
 require_once __DIR__ . '/../src/Controllers/BiolinkController.php';
@@ -75,6 +78,7 @@ use App\Controllers\CitaController;
 use App\Controllers\HistoriaController;
 use App\Controllers\ArchivoController;
 use App\Controllers\FinanzaServicioController;
+use App\Controllers\PresupuestoController;
 use App\Controllers\AjustesMedicoController;
 use App\Controllers\BiolinkController;
 use App\Documentos\ValidadorInformePublico;
@@ -372,13 +376,13 @@ if ($uri === '/' || $uri === '/api') {
     FinanzaServicioController::facturarMovimiento($input);
 
 } elseif ($uri === '/api/presupuestos' && $method === 'GET') {
-    FinanzaServicioController::listarPresupuestos();
+    PresupuestoController::listarPresupuestos();
 
 } elseif ($uri === '/api/presupuestos' && $method === 'POST') {
-    FinanzaServicioController::crearPresupuesto($input);
+    PresupuestoController::crearPresupuesto($input);
 
 } elseif (preg_match('#^/api/presupuestos/(\d+)/aprobar$#', $uri, $matches) && $method === 'POST') {
-    FinanzaServicioController::aprobarYCargarPresupuesto((int)$matches[1], $input);
+    PresupuestoController::aprobarYCargarPresupuesto((int)$matches[1], $input);
 
 } elseif ($uri === '/api/presupuestos/pdf' && $method === 'GET') {
     if (ob_get_length()) {

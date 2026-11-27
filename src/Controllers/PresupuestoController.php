@@ -4,6 +4,7 @@ namespace App\Controllers;
 use App\Config\Database;
 use App\Documentos\FacturaPdfGenerator;
 use App\Documentos\PresupuestoPdfGenerator;
+use PDO;
 use Exception;
 
 class PresupuestoController {
