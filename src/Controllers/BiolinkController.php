@@ -51,24 +51,6 @@ class BiolinkController {
         return $cols;
     }
 
-    private static function obtenerTasaBcvActual(PDO $pdo): float {
-        foreach (['gm_tasa_bcv', 'gm_tasas_bcv'] as $tablaTasa) {
-            try {
-                $stmt = $pdo->query("SELECT * FROM `$tablaTasa` ORDER BY id DESC LIMIT 1");
-                if ($stmt) {
-                    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-                    if ($row) {
-                        $val = floatval($row['tasa_usd'] ?? $row['tasa'] ?? $row['valor'] ?? $row['monto'] ?? 0);
-                        if ($val > 0) {
-                            return $val;
-                        }
-                    }
-                }
-            } catch (Exception $_) {}
-        }
-        return 1.0;
-    }
-
     private static function resolverMedicoPorSlugOId(PDO $pdo, string $slugOId): ?array {
         $limpio = trim($slugOId);
         if ($limpio === '') {
@@ -246,7 +228,7 @@ class BiolinkController {
                 }
             }
 
-            // 4. Servicios activos
+            // 4. Servicios activos (incluyendo permite_financiamiento y cantidad_cuotas)
             $colsSrv = self::columnasTabla($pdo, 'gm_servicios');
             $whereEstado = in_array('estado', $colsSrv, true)
                 ? "AND (estado = 'activo' OR estado IS NULL OR estado = '')"
@@ -347,15 +329,15 @@ class BiolinkController {
             $pdo = Database::conectar();
             $pac = null;
 
-            // Si se envían ambos (documento y WhatsApp), ambos deben pertenecer al mismo paciente
             if ($cedula !== '' && strlen($whatsapp) >= 10) {
+                $ultimos10 = substr($whatsapp, -10);
                 $stmtAmbos = $pdo->prepare("
                     SELECT * FROM gm_usuarios_extendidos
                     WHERE REPLACE(REPLACE(cedula, '.', ''), '-', '') = ?
-                      AND REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') = ?
+                      AND REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') LIKE ?
                     LIMIT 1
                 ");
-                $stmtAmbos->execute([$cedula, $whatsapp]);
+                $stmtAmbos->execute([$cedula, '%' . $ultimos10]);
                 $pac = $stmtAmbos->fetch(PDO::FETCH_ASSOC);
             } elseif ($cedula !== '') {
                 $stmtCed = $pdo->prepare("
@@ -366,12 +348,13 @@ class BiolinkController {
                 $stmtCed->execute([$cedula]);
                 $pac = $stmtCed->fetch(PDO::FETCH_ASSOC);
             } elseif (strlen($whatsapp) >= 10) {
+                $ultimos10 = substr($whatsapp, -10);
                 $stmtWa = $pdo->prepare("
                     SELECT * FROM gm_usuarios_extendidos
-                    WHERE REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') = ?
+                    WHERE REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') LIKE ?
                     LIMIT 1
                 ");
-                $stmtWa->execute([$whatsapp]);
+                $stmtWa->execute(['%' . $ultimos10]);
                 $pac = $stmtWa->fetch(PDO::FETCH_ASSOC);
             }
 
@@ -392,6 +375,9 @@ class BiolinkController {
                         "sexo"                => $pac['sexo'] ?? 'Femenino',
                         "email"               => $pac['email'] ?? '',
                         "whatsapp"            => $pac['whatsapp'] ?? $whatsapp,
+                        "pais"                => $pac['pais'] ?? '',
+                        "estado"              => $pac['estado'] ?? '',
+                        "direccion"           => $pac['direccion_detalle'] ?? ($pac['direccion'] ?? ''),
                     ]
                 ], JSON_UNESCAPED_UNICODE);
             } else {
@@ -408,9 +394,9 @@ class BiolinkController {
     }
 
     /**
-     * Obtiene o crea el paciente y devuelve su registro completo (id, nombre, cedula, telefono, direccion)
+     * Obtiene o crea el paciente en gm_usuarios_extendidos y devuelve sus datos completos.
      */
-    private static function obtenerOCrearPacienteCompleto(PDO $pdo, array $input, int $medicoId): array {
+    private static function obtenerOCrearPaciente(PDO $pdo, array $input, int $medicoId): array {
         $pacienteId = intval($input['paciente_id'] ?? 0);
         $tipoDoc    = trim((string)($input['tipo_identificacion'] ?? 'V')) ?: 'V';
         $cedula     = preg_replace('/\D/', '', (string)($input['cedula'] ?? ''));
@@ -422,6 +408,11 @@ class BiolinkController {
         $fnac       = trim((string)($input['fecha_nacimiento'] ?? ''));
         $sexo       = trim((string)($input['sexo'] ?? 'Femenino')) ?: 'Femenino';
         $email      = trim((string)($input['email'] ?? ''));
+        $pais       = trim((string)($input['pais'] ?? ''));
+        $estado     = trim((string)($input['estado'] ?? ''));
+        $direccion  = trim((string)($input['direccion'] ?? ($input['direccion_detalle'] ?? '')));
+
+        $colsUser = self::columnasTabla($pdo, 'gm_usuarios_extendidos');
 
         $row = null;
         if ($pacienteId > 0) {
@@ -429,24 +420,15 @@ class BiolinkController {
             $stmtId->execute([$pacienteId, $pacienteId]);
             $row = $stmtId->fetch(PDO::FETCH_ASSOC);
         }
-        if (!$row && $cedula !== '' && strlen($whatsapp) >= 10) {
-            $stmtAmbos = $pdo->prepare("
-                SELECT * FROM gm_usuarios_extendidos
-                WHERE REPLACE(REPLACE(cedula, '.', ''), '-', '') = ?
-                  AND REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') = ?
-                LIMIT 1
-            ");
-            $stmtAmbos->execute([$cedula, $whatsapp]);
-            $row = $stmtAmbos->fetch(PDO::FETCH_ASSOC);
-        }
         if (!$row && $cedula !== '') {
             $stmtCed = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE REPLACE(REPLACE(cedula, '.', ''), '-', '') = ? LIMIT 1");
             $stmtCed->execute([$cedula]);
             $row = $stmtCed->fetch(PDO::FETCH_ASSOC);
         }
         if (!$row && strlen($whatsapp) >= 10) {
-            $stmtWa = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') = ? LIMIT 1");
-            $stmtWa->execute([$whatsapp]);
+            $ultimos10 = substr($whatsapp, -10);
+            $stmtWa = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') LIKE ? LIMIT 1");
+            $stmtWa->execute(['%' . $ultimos10]);
             $row = $stmtWa->fetch(PDO::FETCH_ASSOC);
         }
 
@@ -458,17 +440,23 @@ class BiolinkController {
                 $row['apellido'] ?? $apellido,
                 $row['segundo_apellido'] ?? $segApel,
             ])));
-            $td = trim((string)($row['tipo_identificacion'] ?? $tipoDoc)) ?: 'V';
+            $td  = trim((string)($row['tipo_identificacion'] ?? $tipoDoc)) ?: 'V';
             $ced = trim((string)($row['cedula'] ?? $cedula));
             $tel = trim((string)($row['whatsapp'] ?? $whatsapp));
-            $dir = trim((string)($row['direccion'] ?? $row['direccion_detalle'] ?? $row['domicilio'] ?? ''));
+            $dirBase = trim((string)($row['direccion_detalle'] ?? ($row['direccion'] ?? ($row['domicilio'] ?? $direccion))));
+            $estBase = trim((string)($row['estado'] ?? $estado));
+            $paisBase = trim((string)($row['pais'] ?? $pais));
+            $dirCompleta = trim(implode(', ', array_filter([$dirBase, $estBase, $paisBase])));
 
             return [
                 'paciente_id' => $uid,
                 'nombre'      => $nomCompleto,
                 'cedula'      => $ced !== '' ? "$td-$ced" : '',
                 'telefono'    => $tel,
-                'direccion'   => $dir,
+                'email'       => trim((string)($row['email'] ?? $email)),
+                'pais'        => $paisBase,
+                'estado'      => $estBase,
+                'direccion'   => $dirCompleta,
             ];
         }
 
@@ -480,7 +468,6 @@ class BiolinkController {
         $stmtMax = $pdo->query("SELECT COALESCE(MAX(user_id), 1000) + 1 AS sig FROM gm_usuarios_extendidos");
         $nuevoId = intval($stmtMax->fetch(PDO::FETCH_ASSOC)['sig']);
 
-        $colsUser = self::columnasTabla($pdo, 'gm_usuarios_extendidos');
         $campos = ['user_id', 'tipo_identificacion', 'cedula', 'whatsapp', 'nombre', 'apellido', 'edad', 'sexo', 'email', 'rol_medico'];
         $valores = [$nuevoId, $tipoDoc, $cedula, $whatsapp, $nombre, $apellido, $edad, $sexo, $email, 'gm_paciente'];
 
@@ -500,6 +487,21 @@ class BiolinkController {
             $campos[] = 'fecha_nacimiento';
             $valores[] = $fnac;
         }
+        if (in_array('pais', $colsUser, true) && $pais !== '') {
+            $campos[] = 'pais';
+            $valores[] = $pais;
+        }
+        if (in_array('estado', $colsUser, true) && $estado !== '') {
+            $campos[] = 'estado';
+            $valores[] = $estado;
+        }
+        if (in_array('direccion_detalle', $colsUser, true)) {
+            $campos[] = 'direccion_detalle';
+            $valores[] = $direccion;
+        } elseif (in_array('direccion', $colsUser, true)) {
+            $campos[] = 'direccion';
+            $valores[] = $direccion;
+        }
 
         $colsSql = implode(', ', $campos);
         $marksSql = implode(', ', array_fill(0, count($valores), '?'));
@@ -507,13 +509,17 @@ class BiolinkController {
         $stmtIns->execute($valores);
 
         $nomCompleto = trim(implode(' ', array_filter([$nombre, $segNombre, $apellido, $segApel])));
+        $dirCompleta = trim(implode(', ', array_filter([$direccion, $estado, $pais])));
 
         return [
             'paciente_id' => $nuevoId,
             'nombre'      => $nomCompleto,
             'cedula'      => $cedula !== '' ? "$tipoDoc-$cedula" : '',
             'telefono'    => $whatsapp,
-            'direccion'   => '',
+            'email'       => $email,
+            'pais'        => $pais,
+            'estado'      => $estado,
+            'direccion'   => $dirCompleta,
         ];
     }
 
@@ -536,7 +542,7 @@ class BiolinkController {
             }
 
             $pdo = Database::conectar();
-            $pacInfo = self::obtenerOCrearPacienteCompleto($pdo, $input, $medicoId);
+            $pacInfo = self::obtenerOCrearPaciente($pdo, $input, $medicoId);
             $pacienteId = $pacInfo['paciente_id'];
 
             $colsCita = self::columnasTabla($pdo, 'gm_citas');
@@ -574,6 +580,7 @@ class BiolinkController {
 
     /**
      * POST /api/publico/biolink/presupuesto
+     * Solo acepta servicios de contado (permite_financiamiento = 0 y cantidad_cuotas <= 1)
      */
     public static function solicitarPresupuesto(array $input) {
         try {
@@ -589,16 +596,25 @@ class BiolinkController {
             }
 
             $pdo = Database::conectar();
-            $pacInfo    = self::obtenerOCrearPacienteCompleto($pdo, $input, $medicoId);
+            $pacInfo = self::obtenerOCrearPaciente($pdo, $input, $medicoId);
             $pacienteId = $pacInfo['paciente_id'];
 
-            // 1. Obtener tasa BCV real desde gm_tasa_bcv
-            $tasaBcv = self::obtenerTasaBcvActual($pdo);
+            // Obtener tasa BCV actual si existe
+            $tasaBcv = 1.0;
+            try {
+                $stmtTasa = $pdo->query("SELECT tasa_usd FROM gm_tasas_bcv ORDER BY id DESC LIMIT 1");
+                if ($stmtTasa) {
+                    $rowTasa = $stmtTasa->fetch(PDO::FETCH_ASSOC);
+                    if ($rowTasa && floatval($rowTasa['tasa_usd']) > 0) {
+                        $tasaBcv = floatval($rowTasa['tasa_usd']);
+                    }
+                }
+            } catch (Exception $_) {}
 
-            // 2. Validar servicios estrictamente de contado
             $idsLimpios = array_values(array_filter(array_map('intval', $serviciosIds), fn($v) => $v > 0));
             $placeholders = implode(',', array_fill(0, count($idsLimpios), '?'));
 
+            // Filtrar estrictamente servicios de contado (sin financiamiento y 1 cuota)
             $colsSrv = self::columnasTabla($pdo, 'gm_servicios');
             $filtroFin = in_array('permite_financiamiento', $colsSrv, true)
                 ? "AND COALESCE(permite_financiamiento, 0) = 0"
@@ -629,14 +645,12 @@ class BiolinkController {
             $totalUsd = 0.0;
             foreach ($itemsRaw as $it) {
                 $precio = floatval($it['precio_usd'] ?? $it['precio'] ?? $it['monto_usd'] ?? 0);
-                $nomSrv = $it['nombre'] ?? $it['nombre_servicio'] ?? $it['titulo'] ?? 'Servicio';
-                $descSrv = $it['descripcion'] ?? $nomSrv;
                 $totalUsd += $precio;
                 $items[] = [
                     'id'           => intval($it['id'] ?? 0),
                     'servicio_id'  => intval($it['id'] ?? 0),
-                    'nombre'       => $nomSrv,
-                    'descripcion'  => $descSrv,
+                    'nombre'       => $it['nombre'] ?? $it['nombre_servicio'] ?? $it['titulo'] ?? 'Servicio',
+                    'descripcion'  => $it['nombre'] ?? $it['nombre_servicio'] ?? $it['titulo'] ?? 'Servicio',
                     'cantidad'     => 1,
                     'precio_usd'   => $precio,
                     'subtotal_usd' => $precio,
@@ -644,7 +658,7 @@ class BiolinkController {
             }
             $totalBs = round($totalUsd * $tasaBcv, 2);
 
-            // 3. Correlativo de presupuesto del médico
+            // Correlativo de presupuesto del médico
             $colsPres = self::columnasTabla($pdo, 'gm_presupuestos');
             $stmtCorr = $pdo->prepare("SELECT COUNT(*) AS cnt FROM gm_presupuestos WHERE medico_id = ?");
             $stmtCorr->execute([$medicoId]);
@@ -653,13 +667,21 @@ class BiolinkController {
             $stmtIni = $pdo->prepare("SELECT meta_value FROM gm_medico_meta WHERE medico_id = ? AND meta_key = 'inicio_presupuesto' LIMIT 1");
             $stmtIni->execute([$medicoId]);
             $iniPres = intval($stmtIni->fetchColumn() ?: 1);
-            $numeroPresPadded = str_pad((string)($iniPres + $cntExistentes), 6, '0', STR_PAD_LEFT);
+            $numeroPres = $iniPres + $cntExistentes;
 
-            $fechaEmision     = date('Y-m-d');
+            $fechaEmision     = date('Y-m-d H:i:s');
             $fechaVencimiento = date('Y-m-d', strtotime('+3 days'));
 
             $campos = ['medico_id', 'paciente_id', 'total_usd'];
             $valores = [$medicoId, $pacienteId, $totalUsd];
+
+            if (in_array('estado', $colsPres, true)) {
+                $campos[] = 'estado';
+                $valores[] = 'pendiente';
+            } elseif (in_array('estatus', $colsPres, true)) {
+                $campos[] = 'estatus';
+                $valores[] = 'pendiente';
+            }
 
             if (in_array('paciente_nombre', $colsPres, true)) {
                 $campos[] = 'paciente_nombre';
@@ -677,17 +699,9 @@ class BiolinkController {
                 $campos[] = 'paciente_direccion';
                 $valores[] = $pacInfo['direccion'];
             }
-            if (in_array('estatus', $colsPres, true)) {
-                $campos[] = 'estatus';
-                $valores[] = 'pendiente';
-            }
-            if (in_array('estado', $colsPres, true)) {
-                $campos[] = 'estado';
-                $valores[] = 'pendiente';
-            }
             if (in_array('numero_presupuesto', $colsPres, true)) {
                 $campos[] = 'numero_presupuesto';
-                $valores[] = $numeroPresPadded;
+                $valores[] = str_pad((string)$numeroPres, 6, '0', STR_PAD_LEFT);
             }
             if (in_array('tasa_bcv', $colsPres, true)) {
                 $campos[] = 'tasa_bcv';
@@ -726,22 +740,13 @@ class BiolinkController {
             $host = $_SERVER['HTTP_HOST'] ?? 'api.ginevapp.com';
             $pdfUrl = "https://$host/api/presupuestos/pdf?id=$presupuestoId";
 
-            // Guardar url_pdf en gm_presupuestos si la columna existe
-            if (in_array('url_pdf', $colsPres, true)) {
-                $stmtUpdUrl = $pdo->prepare("UPDATE gm_presupuestos SET url_pdf = ? WHERE id = ?");
-                $stmtUpdUrl->execute([$pdfUrl, $presupuestoId]);
-            }
-
             echo json_encode([
-                "status"             => "success",
-                "mensaje"            => "Presupuesto N° $numeroPresPadded generado correctamente.",
-                "presupuesto_id"     => $presupuestoId,
-                "numero_presupuesto" => $numeroPresPadded,
-                "paciente_id"        => $pacienteId,
-                "tasa_bcv"           => $tasaBcv,
-                "total_bs"           => $totalBs,
-                "fecha_vencimiento"  => $fechaVencimiento,
-                "pdf_url"            => $pdfUrl,
+                "status"            => "success",
+                "mensaje"           => "Presupuesto #$presupuestoId generado correctamente.",
+                "presupuesto_id"    => $presupuestoId,
+                "paciente_id"       => $pacienteId,
+                "fecha_vencimiento" => $fechaVencimiento,
+                "pdf_url"           => $pdfUrl,
             ], JSON_UNESCAPED_UNICODE);
 
         } catch (Exception $e) {
