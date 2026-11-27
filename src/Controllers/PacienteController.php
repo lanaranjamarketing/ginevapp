@@ -22,7 +22,7 @@ class PacienteController {
 
     /**
      * GET /api/pacientes?medico_id=X&search=&orden=apellido_asc&limit=25&page=1
-     * Incluye pacientes creados por el médico, con al menos 1 cita reservada o con historia clínica
+     * Devuelve ÚNICAMENTE pacientes que tengan al menos 1 cita o 1 historia clínica con el médico logueado
      */
     public static function listarPacientes() {
         try {
@@ -39,8 +39,6 @@ class PacienteController {
                 return;
             }
 
-            $tieneCreadoPor = self::columnaExiste($pdo, 'gm_usuarios_extendidos', 'creado_por');
-
             $condicionesVinculo = [
                 "EXISTS (SELECT 1 FROM gm_citas ci WHERE ci.paciente_id = u.user_id AND ci.medico_id = :med_citas)",
                 "EXISTS (SELECT 1 FROM gm_historias_medicas hm WHERE hm.paciente_id = u.user_id AND hm.medico_id = :med_hist)"
@@ -51,11 +49,6 @@ class PacienteController {
                 ':med_ult'   => $medicoId,
                 ':med_prox'  => $medicoId,
             ];
-
-            if ($tieneCreadoPor) {
-                $condicionesVinculo[] = "u.creado_por = :med_creador";
-                $params[':med_creador'] = $medicoId;
-            }
 
             $whereParts = ["(" . implode(" OR ", $condicionesVinculo) . ")"];
 
