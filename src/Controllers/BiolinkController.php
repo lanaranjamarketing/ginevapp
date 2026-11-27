@@ -347,7 +347,17 @@ class BiolinkController {
             $pdo = Database::conectar();
             $pac = null;
 
-            if ($cedula !== '') {
+            // Si se envían ambos (documento y WhatsApp), ambos deben pertenecer al mismo paciente
+            if ($cedula !== '' && strlen($whatsapp) >= 10) {
+                $stmtAmbos = $pdo->prepare("
+                    SELECT * FROM gm_usuarios_extendidos
+                    WHERE REPLACE(REPLACE(cedula, '.', ''), '-', '') = ?
+                      AND REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') = ?
+                    LIMIT 1
+                ");
+                $stmtAmbos->execute([$cedula, $whatsapp]);
+                $pac = $stmtAmbos->fetch(PDO::FETCH_ASSOC);
+            } elseif ($cedula !== '') {
                 $stmtCed = $pdo->prepare("
                     SELECT * FROM gm_usuarios_extendidos
                     WHERE REPLACE(REPLACE(cedula, '.', ''), '-', '') = ?
@@ -355,16 +365,13 @@ class BiolinkController {
                 ");
                 $stmtCed->execute([$cedula]);
                 $pac = $stmtCed->fetch(PDO::FETCH_ASSOC);
-            }
-
-            if (!$pac && strlen($whatsapp) >= 10) {
-                $ultimos10 = substr($whatsapp, -10);
+            } elseif (strlen($whatsapp) >= 10) {
                 $stmtWa = $pdo->prepare("
                     SELECT * FROM gm_usuarios_extendidos
-                    WHERE REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') LIKE ?
+                    WHERE REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') = ?
                     LIMIT 1
                 ");
-                $stmtWa->execute(['%' . $ultimos10]);
+                $stmtWa->execute([$whatsapp]);
                 $pac = $stmtWa->fetch(PDO::FETCH_ASSOC);
             }
 
@@ -422,15 +429,24 @@ class BiolinkController {
             $stmtId->execute([$pacienteId, $pacienteId]);
             $row = $stmtId->fetch(PDO::FETCH_ASSOC);
         }
+        if (!$row && $cedula !== '' && strlen($whatsapp) >= 10) {
+            $stmtAmbos = $pdo->prepare("
+                SELECT * FROM gm_usuarios_extendidos
+                WHERE REPLACE(REPLACE(cedula, '.', ''), '-', '') = ?
+                  AND REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') = ?
+                LIMIT 1
+            ");
+            $stmtAmbos->execute([$cedula, $whatsapp]);
+            $row = $stmtAmbos->fetch(PDO::FETCH_ASSOC);
+        }
         if (!$row && $cedula !== '') {
             $stmtCed = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE REPLACE(REPLACE(cedula, '.', ''), '-', '') = ? LIMIT 1");
             $stmtCed->execute([$cedula]);
             $row = $stmtCed->fetch(PDO::FETCH_ASSOC);
         }
         if (!$row && strlen($whatsapp) >= 10) {
-            $ultimos10 = substr($whatsapp, -10);
-            $stmtWa = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') LIKE ? LIMIT 1");
-            $stmtWa->execute(['%' . $ultimos10]);
+            $stmtWa = $pdo->prepare("SELECT * FROM gm_usuarios_extendidos WHERE REPLACE(REPLACE(REPLACE(whatsapp, '+', ''), ' ', ''), '-', '') = ? LIMIT 1");
+            $stmtWa->execute([$whatsapp]);
             $row = $stmtWa->fetch(PDO::FETCH_ASSOC);
         }
 
@@ -445,7 +461,7 @@ class BiolinkController {
             $td = trim((string)($row['tipo_identificacion'] ?? $tipoDoc)) ?: 'V';
             $ced = trim((string)($row['cedula'] ?? $cedula));
             $tel = trim((string)($row['whatsapp'] ?? $whatsapp));
-            $dir = trim((string)($row['direccion'] ?? $row['domicilio'] ?? ''));
+            $dir = trim((string)($row['direccion'] ?? $row['direccion_detalle'] ?? $row['domicilio'] ?? ''));
 
             return [
                 'paciente_id' => $uid,
@@ -465,9 +481,13 @@ class BiolinkController {
         $nuevoId = intval($stmtMax->fetch(PDO::FETCH_ASSOC)['sig']);
 
         $colsUser = self::columnasTabla($pdo, 'gm_usuarios_extendidos');
-        $campos = ['user_id', 'tipo_identificacion', 'cedula', 'whatsapp', 'nombre', 'apellido', 'edad', 'sexo', 'email', 'rol_medico', 'creado_por'];
-        $valores = [$nuevoId, $tipoDoc, $cedula, $whatsapp, $nombre, $apellido, $edad, $sexo, $email, 'gm_paciente', $medicoId];
+        $campos = ['user_id', 'tipo_identificacion', 'cedula', 'whatsapp', 'nombre', 'apellido', 'edad', 'sexo', 'email', 'rol_medico'];
+        $valores = [$nuevoId, $tipoDoc, $cedula, $whatsapp, $nombre, $apellido, $edad, $sexo, $email, 'gm_paciente'];
 
+        if (in_array('creado_por', $colsUser, true)) {
+            $campos[] = 'creado_por';
+            $valores[] = $medicoId;
+        }
         if (in_array('segundo_nombre', $colsUser, true)) {
             $campos[] = 'segundo_nombre';
             $valores[] = $segNombre;
