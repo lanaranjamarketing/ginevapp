@@ -180,10 +180,26 @@ class BiolinkController {
 
             $horariosPorSede = [];
             $todosLosHorarios = [];
+            $calendariosPublicos = [];
 
             foreach ($calendariosRows as $cal) {
+                $estadoCal = strtolower(trim((string)($cal['estado'] ?? 'activo')));
+                if ($estadoCal === 'inactivo' || $estadoCal === 'eliminado') {
+                    continue;
+                }
+
                 $diasConf = json_decode($cal['dias_config'] ?? '{}', true);
-                if (!is_array($diasConf)) continue;
+                if (!is_array($diasConf)) {
+                    $diasConf = [];
+                }
+
+                $calItem = $cal;
+                $calItem['id'] = intval($cal['id'] ?? 0);
+                $calItem['medico_id'] = intval($cal['medico_id'] ?? $medicoId);
+                $calItem['duracion_bloque'] = intval($cal['duracion_bloque'] ?? 30);
+                $calItem['cupos_por_bloque'] = intval($cal['cupos_por_bloque'] ?? 1);
+                $calItem['dias_config'] = $diasConf;
+                $calendariosPublicos[] = $calItem;
 
                 foreach ($diasOrden as $engKey => $espLabel) {
                     if (!isset($diasConf[$engKey]) || !is_array($diasConf[$engKey])) continue;
@@ -328,6 +344,7 @@ class BiolinkController {
                         "biolink_slug" => $metas['biolink_slug'] ?? $slug,
                     ],
                     "sedes"            => $sedes,
+                    "calendarios"      => $calendariosPublicos,
                     "horarios_general" => $todosLosHorarios,
                     "servicios"        => $servicios,
                 ]
